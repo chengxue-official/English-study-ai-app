@@ -1,0 +1,23 @@
+{
+  "name": "english-exam-app-server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "npx tsx --watch server.ts",
+    "start": "npx tsx server.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.11.1",
+    "cors": "^2.8.5",
+    "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "~5.7.0"
+  }
+}

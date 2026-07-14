@@ -1,0 +1,42 @@
+[
+  {
+    "word": "'ands",
+    "exchange": "0:'and/1:3"
+  },
+  {
+    "word": "'angs",
+    "exchange": "0:'ang/1:3"
+  },
+  {
+    "word": "'appened",
+    "exchange": "0:'appen/1:p"
+  },
+  {
+    "word": "'appening",
+    "exchange": "0:'appen/1:i"
+  },
+  {
+    "word": "'appens",
+    "exchange": "0:'appen/1:3"
+  },
+  {
+    "word": "'ated",
+    "exchange": "0:'at/1:p"
+  },
+  {
+    "word": "'ates",
+    "exchange": "0:'ate/1:3"
+  },
+  {
+    "word": "'ats",
+    "exchange": "0:'at"
+  },
+  {
+    "word": "'boks",
+    "exchange": "0:'bok"
+  },
+  {
+    "word": "'cepting",
+    "exchange": "0:'cept/1:i"
+  }
+]
