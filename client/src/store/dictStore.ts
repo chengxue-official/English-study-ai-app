@@ -1,19 +1,16 @@
 import { create } from 'zustand'
 import { useConfigStore } from './configStore'
+import { dbService, DictEntry } from '../services/database'
+import { llmService } from '../services/llm'
+import { YoudaoService } from '../services/youdao'
 
-export interface WordDetail {
-  word: string
-  phonetic: string
-  definition: string
-  translation: string
-  pos: string
-  collins: number
-  oxford: number
-  tags: string[]
-  bnc: number | null
-  frq: number | null
-  exchange: Record<string, string[]>
-  searchedForm?: string
+export type WordDetail = DictEntry
+
+export interface WordUsage {
+  collocations: { en: string; zh: string }[]
+  phrases: { en: string; zh: string }[]
+  usage: { point: string; example: string; translation: string }[]
+  cached?: boolean  // 是否来自本地缓存
 }
 
 export interface WordUsage {
@@ -90,6 +87,11 @@ interface DictState {
   contextError: string | null
   lastContextParams: { word: string; sentence: string; translation: string } | null
 
+  // 助记
+  mnemonicLoading: boolean
+  wordMnemonic: string | null
+  mnemonicError: string | null
+
   // 上下文句子和译文（点击查词时保存，用于本地匹配和手动AI分析）
   contextSentence: string
   contextTranslation: string
@@ -102,6 +104,8 @@ interface DictState {
   setContext: (sentence: string, translation: string) => void
   lookupContext: (word: string, sentence: string, translation: string, forceRefresh?: boolean) => Promise<void>
   retryContext: () => Promise<void>
+  lookupMnemonic: (word: string, forceRefresh?: boolean) => Promise<void>
+  clearMnemonic: () => void
 }
 
 export const useDictStore = create<DictState>((set) => ({
@@ -118,6 +122,11 @@ export const useDictStore = create<DictState>((set) => ({
   contextInfo: null,
   contextError: null,
   lastContextParams: null,
+
+  mnemonicLoading: false,
+  wordMnemonic: null,
+  mnemonicError: null,
+
   contextSentence: '',
   contextTranslation: '',
   localMatchedIndex: -1,
@@ -126,30 +135,36 @@ export const useDictStore = create<DictState>((set) => ({
     const cleaned = word.toLowerCase().replace(/[^a-z'-]/g, '')
     if (!cleaned) return
 
-    set({ loading: true, currentWord: null, notFound: null, error: null, usageLoading: false, wordUsage: null, usageError: null, contextLoading: false, contextInfo: null, contextError: null, lastContextParams: null, contextSentence: '', contextTranslation: '', localMatchedIndex: -1 })
+    set({ loading: true, currentWord: null, notFound: null, error: null, usageLoading: false, wordUsage: null, usageError: null, contextLoading: false, contextInfo: null, contextError: null, lastContextParams: null, mnemonicLoading: false, wordMnemonic: null, mnemonicError: null, contextSentence: '', contextTranslation: '', localMatchedIndex: -1 })
 
     try {
-      const res = await fetch(`/api/dictionary/${encodeURIComponent(cleaned)}`)
-      const data = await res.json()
+      const result = await dbService.queryWord(cleaned)
 
-      if (data.found) {
-        set({ loading: false, currentWord: data, notFound: null, error: null })
+      if (result.found && result.data) {
+        set({ loading: false, currentWord: result.data, notFound: null, error: null })
       } else {
-        set({ loading: false, currentWord: null, notFound: data.word || cleaned, error: null })
+        // 本地未找到，尝试在线查询
+        console.log(`[lookupWord] 本地未找到 ${cleaned}，尝试在线查询...`)
+        const onlineResult = await YoudaoService.fetchWord(cleaned)
+        if (onlineResult) {
+          set({ loading: false, currentWord: onlineResult, notFound: null, error: null })
+        } else {
+          set({ loading: false, currentWord: null, notFound: result.word || cleaned, error: null })
+        }
       }
-    } catch {
-      set({ loading: false, currentWord: null, notFound: null, error: '查询失败，请检查后端服务' })
+    } catch (err: any) {
+      set({ loading: false, currentWord: null, notFound: null, error: `查询失败: ${err.message || err}` })
     }
   },
 
-  clearWord: () => set({ loading: false, currentWord: null, notFound: null, error: null, usageLoading: false, wordUsage: null, usageError: null, contextLoading: false, contextInfo: null, contextError: null, lastContextParams: null, contextSentence: '', contextTranslation: '', localMatchedIndex: -1 }),
+  clearWord: () => set({ loading: false, currentWord: null, notFound: null, error: null, usageLoading: false, wordUsage: null, usageError: null, contextLoading: false, contextInfo: null, contextError: null, lastContextParams: null, mnemonicLoading: false, wordMnemonic: null, mnemonicError: null, contextSentence: '', contextTranslation: '', localMatchedIndex: -1 }),
 
   lookupUsage: async (word: string, forceRefresh?: boolean) => {
     const cleaned = word.toLowerCase().replace(/[^a-z'-]/g, '')
     if (!cleaned) return
 
     // 从configStore获取API配置
-    const { apiKey, apiUrl, model } = useConfigStore.getState().getConfig()
+    const { apiKey } = useConfigStore.getState().getConfig()
     if (!apiKey) {
       set({ usageError: '请先在设置中配置API Key' })
       return
@@ -159,13 +174,17 @@ export const useDictStore = create<DictState>((set) => ({
     set({ usageLoading: true, wordUsage: null, usageError: null })
 
     try {
-      const res = await fetch('/api/word-usage', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ word: cleaned, apiKey, apiUrl, model, forceRefresh: !!forceRefresh }),
-      })
-      const data = await res.json()
-      console.log(`[lookupUsage] 响应: found=${data.found}, cached=${data.cached}`)
+      // 1. 尝试从本地缓存获取
+      if (!forceRefresh) {
+        const cached = await dbService.getWordUsage(cleaned)
+        if (cached) {
+          set({ usageLoading: false, wordUsage: { ...cached, cached: true }, usageError: null })
+          return
+        }
+      }
+
+      // 2. 调用 LLM 获取
+      const data = await llmService.getWordUsage(cleaned)
 
       // 防止旧请求结果覆盖：检查当前单词是否仍是请求时的单词
       const currentWord = useDictStore.getState().currentWord
@@ -173,16 +192,18 @@ export const useDictStore = create<DictState>((set) => ({
         return // 用户已切到其他单词，丢弃结果
       }
 
-      if (data.found && (data.collocations || data.phrases || data.usage)) {
-        set({ usageLoading: false, wordUsage: data, usageError: null })
+      if (data && (data.collocations || data.phrases || data.usage)) {
+        // 保存到本地缓存
+        await dbService.saveWordUsage(cleaned, data)
+        set({ usageLoading: false, wordUsage: { ...data, cached: false }, usageError: null })
       } else {
         set({ usageLoading: false, wordUsage: null, usageError: '未获取到搭配信息' })
       }
-    } catch {
+    } catch (err: any) {
       // 同样检查当前单词，防止错误状态污染
       const currentWord = useDictStore.getState().currentWord
       if (!currentWord || currentWord.word.toLowerCase() !== cleaned) return
-      set({ usageLoading: false, wordUsage: null, usageError: '搭配查询失败' })
+      set({ usageLoading: false, wordUsage: null, usageError: `搭配查询失败: ${err.message || err}` })
     }
   },
 
@@ -200,63 +221,56 @@ export const useDictStore = create<DictState>((set) => ({
     const cleaned = word.toLowerCase().replace(/[^a-z'-]/g, '')
     if (!cleaned) return
 
-    const { apiKey, apiUrl, model } = useConfigStore.getState().getConfig()
+    const { apiKey } = useConfigStore.getState().getConfig()
     if (!apiKey) return // 没有API Key时静默跳过，不影响基本查词
 
     console.log(`[lookupContext] word=${cleaned}, forceRefresh=${forceRefresh}`)
     // 保存请求参数，用于重试
     set({ contextLoading: true, contextInfo: null, contextError: null, lastContextParams: { word: cleaned, sentence, translation } })
 
-    const doRequest = async (attempt: number): Promise<void> => {
-      // 带超时的fetch（20秒超时，服务端15秒+余量）
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 20000)
+    const cacheKey = `${cleaned}:${sentence.slice(0, 50)}`
 
-      try {
-        const res = await fetch('/api/word-context', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ word: cleaned, sentence, translation, apiKey, apiUrl, model, forceRefresh: !!forceRefresh }),
-          signal: controller.signal,
-        })
-        clearTimeout(timeoutId)
-        const data = await res.json()
-        console.log(`[lookupContext] 响应: found=${data.found}, cached=${data.cached}, contextMeaning=${data.contextMeaning?.slice(0, 20)}`)
-
-        // 防止旧请求结果覆盖
-        const currentWord = useDictStore.getState().currentWord
-        if (!currentWord || currentWord.word.toLowerCase() !== cleaned) return
-
-        if (data.found && data.contextMeaning) {
-          set({ contextLoading: false, contextInfo: data as WordContextInfo, contextError: null })
-        } else if (data.error) {
-          // 服务端返回了可读错误
-          set({ contextLoading: false, contextInfo: null, contextError: String(data.error) })
-        } else {
-          set({ contextLoading: false, contextInfo: null, contextError: null })
+    try {
+      // 1. 尝试从本地缓存获取
+      if (!forceRefresh) {
+        const cached = await dbService.getWordContext(cacheKey)
+        if (cached) {
+          set({ contextLoading: false, contextInfo: { ...cached, cached: true }, contextError: null })
+          return
         }
-      } catch (err: unknown) {
-        clearTimeout(timeoutId)
-        // 防止旧请求结果覆盖
-        const currentWord = useDictStore.getState().currentWord
-        if (!currentWord || currentWord.word.toLowerCase() !== cleaned) return
-
-        const isTimeout = err instanceof Error && err.name === 'AbortError'
-        // 超时：首次自动重试1次
-        if (attempt === 0 && isTimeout) {
-          console.log(`[上下文释义] 请求超时，自动重试...`)
-          set({ contextLoading: true, contextInfo: null, contextError: null })
-          return doRequest(1)
-        }
-
-        const errMsg = isTimeout
-          ? '语境分析超时，请稍后重试'
-          : `语境分析失败: ${err instanceof Error ? err.message : '网络错误'}`
-        set({ contextLoading: false, contextInfo: null, contextError: errMsg })
       }
-    }
 
-    await doRequest(0)
+      // 2. 调用 LLM 获取
+      const data = await llmService.getWordContext(cleaned, sentence, translation)
+
+      // 防止旧请求结果覆盖
+      const currentWord = useDictStore.getState().currentWord
+      if (!currentWord || currentWord.word.toLowerCase() !== cleaned) return
+
+      if (data && data.contextMeaning) {
+        const contextResult = {
+          matchedIndex: typeof data.matchedIndex === 'number' ? data.matchedIndex : -1,
+          contextMeaning: String(data.contextMeaning || ''),
+          phrase: data.phrase && typeof data.phrase === 'object' ? {
+            text: String(data.phrase.text || ''),
+            meaning: String(data.phrase.meaning || ''),
+            words: Array.isArray(data.phrase.words) ? data.phrase.words.map(String) : [],
+          } : null,
+        }
+
+        // 保存到本地缓存
+        await dbService.saveWordContext(cacheKey, cleaned, contextResult)
+        set({ contextLoading: false, contextInfo: { ...contextResult, cached: false }, contextError: null })
+      } else {
+        set({ contextLoading: false, contextInfo: null, contextError: '未获取到有效结果' })
+      }
+    } catch (err: any) {
+      // 防止旧请求结果覆盖
+      const currentWord = useDictStore.getState().currentWord
+      if (!currentWord || currentWord.word.toLowerCase() !== cleaned) return
+
+      set({ contextLoading: false, contextInfo: null, contextError: `语境分析失败: ${err.message || err}` })
+    }
   },
 
   retryContext: async () => {
@@ -266,4 +280,53 @@ export const useDictStore = create<DictState>((set) => ({
     // 使用store方法重新调用（重置retryCount）
     useDictStore.getState().lookupContext(word, sentence, translation)
   },
+
+  lookupMnemonic: async (word: string, forceRefresh?: boolean) => {
+    const cleaned = word.toLowerCase().replace(/[^a-z'-]/g, '')
+    if (!cleaned) return
+
+    const { apiKey } = useConfigStore.getState().getConfig()
+    if (!apiKey) {
+      set({ mnemonicError: '请先在设置中配置API Key' })
+      return
+    }
+
+    console.log(`[lookupMnemonic] word=${cleaned}, forceRefresh=${forceRefresh}`)
+    set({ mnemonicLoading: true, wordMnemonic: null, mnemonicError: null })
+
+    try {
+      const cacheKey = `mnemonic:${cleaned}`
+
+      // 1. 尝试从本地缓存获取
+      if (!forceRefresh) {
+        const cached = await dbService.getWordContext(cacheKey)
+        if (cached && typeof cached === 'string') {
+          set({ mnemonicLoading: false, wordMnemonic: cached, mnemonicError: null })
+          return
+        }
+      }
+
+      // 2. 调用 LLM 获取
+      const result = await llmService.getWordMnemonic(cleaned)
+
+      // 防止旧请求结果覆盖
+      const currentWord = useDictStore.getState().currentWord
+      if (!currentWord || currentWord.word.toLowerCase() !== cleaned) return
+
+      if (result) {
+        // 保存到本地缓存
+        await dbService.saveWordContext(cacheKey, cleaned, result)
+        set({ mnemonicLoading: false, wordMnemonic: result, mnemonicError: null })
+      } else {
+        set({ mnemonicLoading: false, wordMnemonic: null, mnemonicError: '未获取到助记内容' })
+      }
+    } catch (err: any) {
+      // 防止旧请求结果覆盖
+      const currentWord = useDictStore.getState().currentWord
+      if (!currentWord || currentWord.word.toLowerCase() !== cleaned) return
+      set({ mnemonicLoading: false, wordMnemonic: null, mnemonicError: `助记生成失败: ${err.message || err}` })
+    }
+  },
+
+  clearMnemonic: () => set({ mnemonicLoading: false, wordMnemonic: null, mnemonicError: null }),
 }))

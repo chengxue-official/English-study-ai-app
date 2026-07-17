@@ -1,15 +1,18 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import {
   useConfigStore,
   API_PROVIDERS,
 } from '../store/configStore'
+import { useUpdateStore } from '../store/updateStore'
+import { YoudaoService } from '../services/youdao'
 
 interface SettingsModalProps {
   open: boolean
   onClose: () => void
+  onOpenDictManager?: () => void
 }
 
-export default function SettingsModal({ open, onClose }: SettingsModalProps) {
+export default function SettingsModal({ open, onClose, onOpenDictManager }: SettingsModalProps) {
   const {
     apiKey,
     apiUrl,
@@ -25,7 +28,22 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
     fetchModels,
     loadFromStorage,
     saveToStorage,
+    youdaoAppKey,
+    youdaoAppSecret,
+    setYoudaoConfig,
   } = useConfigStore()
+
+  const [youdaoStatus, setYoudaoStatus] = useState<{ success?: boolean; message: string }>({ message: '' })
+  const [testingYoudao, setTestingYoudao] = useState(false)
+
+  const {
+    currentVersion,
+    latestVersion,
+    isChecking,
+    hasUpdate,
+    checkUpdate,
+    applyUpdate,
+  } = useUpdateStore()
 
   // 打开时加载存储的配置
   useEffect(() => {
@@ -41,6 +59,15 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
   // 连接并获取模型列表
   const handleConnect = async () => {
     await fetchModels()
+  }
+
+  // 测试有道连接
+  const handleTestYoudao = async () => {
+    if (!youdaoAppKey || !youdaoAppSecret) return
+    setTestingYoudao(true)
+    const result = await YoudaoService.testConnection(youdaoAppKey, youdaoAppSecret)
+    setYoudaoStatus(result)
+    setTestingYoudao(false)
   }
 
   // 保存配置
@@ -213,6 +240,109 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
               </p>
             </div>
           )}
+
+          {/* 有道词典 API 配置 */}
+          <div className="pt-4 border-t border-gray-100">
+            <label className="block text-sm font-medium text-gray-700 mb-3">
+              有道智云 API 配置 (可选)
+            </label>
+            <div className="p-3 bg-amber-50 rounded-xl text-xs text-amber-700 mb-3">
+              配置有道官方 API 后，查词将更稳定且支持发音。请在 <a href="https://ai.youdao.com/" target="_blank" rel="noreferrer" className="underline font-bold">有道智云控制台</a> 申请“自然语言翻译服务”。
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">App Key</label>
+                <input
+                  type="text"
+                  value={youdaoAppKey}
+                  onChange={(e) => setYoudaoConfig(e.target.value, youdaoAppSecret)}
+                  placeholder="您的 App Key"
+                  className="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-xl bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">App Secret</label>
+                <input
+                  type="password"
+                  value={youdaoAppSecret}
+                  onChange={(e) => setYoudaoConfig(youdaoAppKey, e.target.value)}
+                  placeholder="您的 App Secret"
+                  className="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-xl bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent"
+                />
+              </div>
+              <button
+                onClick={handleTestYoudao}
+                disabled={!youdaoAppKey || !youdaoAppSecret || testingYoudao}
+                className="w-full py-2 text-xs font-medium rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-amber-100 text-amber-700 hover:bg-amber-200"
+              >
+                {testingYoudao ? '正在测试...' : '测试有道连接'}
+              </button>
+
+              {youdaoStatus.message && (
+                <div
+                  className={`p-2 rounded-lg text-[10px] md:text-xs flex items-start gap-1.5 ${
+                    youdaoStatus.success === true
+                      ? 'bg-green-50 text-green-700 border border-green-100'
+                      : 'bg-red-50 text-red-700 border border-red-100'
+                  }`}
+                >
+                  <p>{youdaoStatus.message}</p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 词典管理 */}
+          <div className="pt-4 border-t border-gray-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-medium text-gray-700">词典资源</h3>
+                <p className="text-xs text-gray-400 mt-0.5">管理本地离线词典库</p>
+              </div>
+              <button
+                onClick={() => {
+                  onClose()
+                  onOpenDictManager?.()
+                }}
+                className="px-3 py-1.5 text-xs font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors"
+              >
+                管理词典
+              </button>
+            </div>
+          </div>
+
+          {/* 版本与更新 */}
+          <div className="pt-4 border-t border-gray-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-medium text-gray-700">版本信息</h3>
+                <p className="text-xs text-gray-400 mt-0.5">当前版本: v{currentVersion}</p>
+              </div>
+              <button
+                onClick={checkUpdate}
+                disabled={isChecking}
+                className="px-3 py-1.5 text-xs font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors disabled:opacity-50"
+              >
+                {isChecking ? '正在检查...' : '检查更新'}
+              </button>
+            </div>
+
+            {hasUpdate && latestVersion && (
+              <div className="mt-3 p-3 bg-blue-50 rounded-xl border border-blue-100">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold text-blue-700">发现新版本 v{latestVersion.version}</span>
+                  <span className="text-[10px] text-blue-500">{latestVersion.releaseDate}</span>
+                </div>
+                <p className="text-xs text-blue-600 mb-2">{latestVersion.description}</p>
+                <button
+                  onClick={applyUpdate}
+                  className="w-full py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  立即更新并重启
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* 底部按钮 */}

@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { useConfigStore } from './configStore'
+import { llmService } from '../services/llm'
 
 export interface Paragraph {
   id: string
@@ -46,7 +47,7 @@ export const useArticleStore = create<ArticleState>((set, get) => ({
     if (paragraphs.length === 0) return
 
     // 从configStore获取API配置
-    const { apiKey, apiUrl, model } = useConfigStore.getState().getConfig()
+    const { apiKey } = useConfigStore.getState().getConfig()
     if (!apiKey) {
       set({ error: '请先在设置中配置API Key' })
       return
@@ -56,20 +57,7 @@ export const useArticleStore = create<ArticleState>((set, get) => ({
 
     try {
       const texts = paragraphs.map((p) => p.original)
-
-      const response = await fetch('/api/translate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ texts, apiKey, apiUrl, model }),
-      })
-
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}))
-        throw new Error(errData.error || `翻译请求失败 (${response.status})`)
-      }
-
-      const data = await response.json()
-      const translations: string[] = data.translations
+      const translations = await llmService.translate(texts)
 
       set((state) => ({
         paragraphs: state.paragraphs.map((p, i) => ({
@@ -79,10 +67,10 @@ export const useArticleStore = create<ArticleState>((set, get) => ({
         })),
         isTranslating: false,
       }))
-    } catch (err) {
+    } catch (err: any) {
       set({
         isTranslating: false,
-        error: err instanceof Error ? err.message : '翻译失败，请检查后端服务是否启动',
+        error: `翻译失败: ${err.message || err}`,
       })
     }
   },

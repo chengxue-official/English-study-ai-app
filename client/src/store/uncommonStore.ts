@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import { useConfigStore } from './configStore'
+import { dbService } from '../services/database'
+import { llmService } from '../services/llm'
 
 // 熟词生义扫描结果
 export interface UncommonWord {
@@ -32,8 +34,6 @@ interface UncommonState {
   clearSelection: () => void
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE || ''
-
 export const useUncommonStore = create<UncommonState>((set, get) => ({
   results: [],
   scanning: false,
@@ -48,7 +48,7 @@ export const useUncommonStore = create<UncommonState>((set, get) => ({
     // forceRefresh时先清除旧结果，让用户看到重新生成的过程
     set({ scanning: true, error: null, ...(forceRefresh ? { results: [], enabled: false } : {}) })
     try {
-      const { apiKey, apiUrl, model } = useConfigStore.getState().getConfig()
+      const { apiKey } = useConfigStore.getState().getConfig()
       if (!apiKey) {
         set({ scanning: false, error: '请先在设置中配置API Key' })
         return
@@ -61,30 +61,64 @@ export const useUncommonStore = create<UncommonState>((set, get) => ({
         if (!text || text.trim().length === 0) continue
 
         try {
-          const res = await fetch(`${API_BASE}/api/scan-uncommon-meanings`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              text,
-              translation: translations[i] || '',
-              apiKey,
-              apiUrl,
-              model,
-              forceRefresh: !!forceRefresh,
-            }),
-          })
+          const textHash = text.trim().toLowerCase().replace(/\s+/g, ' ')
+          const cacheKey = `uncommon_v2:${textHash}`
+          let wordsWithPosition: UncommonWord[] = []
 
-          if (!res.ok) {
-            console.warn(`[Uncommon] 段落${i}扫描失败: ${res.status}`)
-            continue
+          // 1. 查缓存
+          if (!forceRefresh) {
+            const cached = await dbService.getSentenceAnalysis(cacheKey)
+            if (cached && Array.isArray(cached)) {
+              console.log(`[Cache] 命中熟词生义缓存: ${textHash.slice(0, 30)}...`)
+              wordsWithPosition = cached
+            }
           }
 
-          const data = await res.json()
-          console.log(`[Uncommon] 段落${i}响应: found=${data.found}, cached=${data.cached}, words=${data.words?.length || 0}`)
-          if (data.found && data.words.length > 0) {
+          // 2. 调用LLM
+          if (wordsWithPosition.length === 0) {
+            const words = await llmService.scanUncommonMeanings(text, translations[i])
+            
+            // 在原文中定位每个熟词生义的位置
+            const cleanText = text.replace(/[^a-zA-Z\s'-]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+            const allWords = cleanText.split(' ').filter(w => w.length > 0)
+            
+            wordsWithPosition = words.map(w => {
+              const wordLower = w.word.toLowerCase()
+              // 在cleanText的单词数组中查找匹配位置
+              const wordIdx = allWords.indexOf(wordLower)
+              if (wordIdx >= 0) {
+                return {
+                  ...w,
+                  startIndex: wordIdx,
+                  endIndex: wordIdx + 1,
+                }
+              }
+              // 尝试词形匹配
+              for (let j = 0; j < allWords.length; j++) {
+                const aw = allWords[j]
+                if (aw === wordLower ||
+                    aw.replace(/(?:ed|es|s|ing|ly|er|est)$/, '') === wordLower.replace(/(?:ed|es|s|ing|ly|er|est)$/, '') ||
+                    aw.replace(/ied$/, 'y') === wordLower.replace(/ied$/, 'y')) {
+                  return {
+                    ...w,
+                    startIndex: j,
+                    endIndex: j + 1,
+                  }
+                }
+              }
+              return null
+            }).filter((w): w is UncommonWord => w !== null)
+
+            // 3. 写缓存
+            if (wordsWithPosition.length > 0) {
+              await dbService.saveSentenceAnalysis(cacheKey, text, wordsWithPosition)
+            }
+          }
+
+          if (wordsWithPosition.length > 0) {
             results.push({
               paragraphIndex: i,
-              words: data.words,
+              words: wordsWithPosition,
             })
           }
         } catch (err) {

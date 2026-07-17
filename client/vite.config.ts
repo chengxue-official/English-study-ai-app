@@ -10,11 +10,5 @@ export default defineConfig({
   server: {
     port: 5173,
     host: '0.0.0.0', // 允许局域网访问（手机调试）
-    proxy: {
-      '/api': {
-        target: 'http://localhost:3001',
-        changeOrigin: true,
-      },
-    },
   },
 })

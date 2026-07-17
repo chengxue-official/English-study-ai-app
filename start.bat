@@ -12,33 +12,16 @@ echo.
 :: 检查 Node.js
 where node >nul 2>nul
 if %errorlevel% neq 0 (
-    echo  [错误] 未检测到 Node.js，请先安装: https://nodejs.org
+    echo  [错误] 未检测到 Node.js，请先前往官方网站安装: https://nodejs.org
     pause
     exit /b 1
 )
 
 :: 检查依赖是否安装
-if not exist "server\node_modules" (
-    echo  [安装] 正在安装后端依赖...
-    cd server && npm install && cd ..
-)
 if not exist "client\node_modules" (
     echo  [安装] 正在安装前端依赖...
     cd client && npm install && cd ..
 )
-
-:: 检查词典数据库
-if not exist "server\data\stardict.db" (
-    echo  [警告] 未检测到词典数据库 (server\data\stardict.db)
-    echo  [警告] 查词功能将不可用，请参考 README 下载 ECDICT 数据库
-    echo.
-)
-
-echo  [启动] 正在启动后端服务 (端口 3001)...
-start "英语应试助手-后端" /min cmd /c "cd /d %~dp0server && npx tsx server.ts"
-
-:: 等待后端启动
-timeout /t 3 /nobreak >nul
 
 echo  [启动] 正在启动前端服务 (端口 5173)...
 start "英语应试助手-前端" /min cmd /c "cd /d %~dp0client && npx vite --host"

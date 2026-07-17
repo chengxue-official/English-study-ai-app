@@ -3,6 +3,8 @@ import { useCollectionStore, type CollectionItem } from '../store/collectionStor
 import { useConfigStore } from '../store/configStore'
 import { speakWord, stopSpeaking } from '../utils/speak'
 import type { WordDetail } from '../store/dictStore'
+import { dbService } from '../services/database'
+import { llmService } from '../services/llm'
 
 // 词性缩写映射
 const POS_LABELS: Record<string, string> = {
@@ -59,7 +61,9 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
   // 当前组统计
   const [groupKnown, setGroupKnown] = useState(0)
   const [groupUnknown, setGroupUnknown] = useState(0)
+  const [groupUnknownItems, setGroupUnknownItems] = useState<CollectionItem[]>([])
   // 拼写测试
+  const [spellingScope, setSpellingScope] = useState<'group' | 'session'>('group')
   const [spellingMode, setSpellingMode] = useState<'unknown' | 'all'>('unknown')
   const [spellingAnswers, setSpellingAnswers] = useState<Record<number, string>>({})
   const [spellingResults, setSpellingResults] = useState<Record<number, boolean>>({})
@@ -104,6 +108,7 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
     setUnknownItems([])
     setGroupKnown(0)
     setGroupUnknown(0)
+    setGroupUnknownItems([])
     setSpellingAnswers({})
     setSpellingResults({})
     setSpellingSubmitted(false)
@@ -125,11 +130,13 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
     setGroupNumber(g => g + 1)
     setGroupKnown(0)
     setGroupUnknown(0)
+    setGroupUnknownItems([])
     autoPlayedRef.current = false
     setState('question')
   }, [groupNumber, allWords])
 
   const nextCard = useCallback(() => {
+    stopSpeaking()
     if (currentIndex + 1 >= currentGroup.length) {
       // 当前组完成
       if (groupNumber >= totalGroups) {
@@ -157,14 +164,16 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
   const handleUnknown = useCallback(async () => {
     const item = currentGroup[currentIndex]
     if (item) {
+      await updateReview(item.id, false)
       setUnknownItems(prev => [...prev, item])
+      setGroupUnknownItems(prev => [...prev, item])
     }
     setUnknownCount(c => c + 1)
     setGroupUnknown(c => c + 1)
     // 展示释义
     setState('show-answer')
     autoPlayedRef.current = false
-  }, [currentGroup, currentIndex])
+  }, [currentGroup, currentIndex, updateReview])
 
   const handleNextAfterUnknown = useCallback(() => {
     nextCard()
@@ -174,7 +183,7 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
     const item = currentGroup[currentIndex]
     if (!item) return
     
-    const { apiKey, apiUrl, model } = useConfigStore.getState().getConfig()
+    const { apiKey } = useConfigStore.getState().getConfig()
     if (!apiKey) {
       setMnemonicData('请先在设置中配置API Key')
       return
@@ -182,20 +191,24 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
 
     setMnemonicLoading(true)
     try {
-      const res = await fetch('/api/word-mnemonic', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ word: item.content, apiKey, apiUrl, model })
-      })
-      if (res.ok) {
-        const data = await res.json()
-        if (data.found && data.mnemonic) {
-          setMnemonicData(data.mnemonic)
-        } else {
-          setMnemonicData(data.error || '未能生成助记内容，请稍后再试。')
-        }
+      const word = item.content.toLowerCase().trim()
+      const cacheKey = `mnemonic:${word}`
+      
+      // 1. 尝试从本地缓存获取
+      const cached = await dbService.getWordContext(cacheKey)
+      if (cached && typeof cached === 'string') {
+        setMnemonicData(cached)
+        setMnemonicLoading(false)
+        return
+      }
+
+      // 2. 调用 LLM 获取
+      const mnemonic = await llmService.getWordMnemonic(word)
+      if (mnemonic) {
+        await dbService.saveWordContext(cacheKey, word, mnemonic)
+        setMnemonicData(mnemonic)
       } else {
-        setMnemonicData('请求失败，请检查网络或API配置。')
+        setMnemonicData('未能生成助记内容，请稍后再试。')
       }
     } catch (err) {
       console.error('Failed to fetch mnemonic:', err)
@@ -223,10 +236,12 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
       setDictLoading(true)
       setDictData(null)
       setMnemonicData(null)
-      fetch(`/api/dictionary/${encodeURIComponent(item.content)}`)
-        .then(res => res.ok ? res.json() : null)
-        .then(data => {
-          if (data) setDictData(data)
+      
+      dbService.queryWord(item.content)
+        .then(result => {
+          if (result.found && result.data) {
+            setDictData(result.data)
+          }
         })
         .catch(err => console.error('Failed to fetch dict data:', err))
         .finally(() => setDictLoading(false))
@@ -563,7 +578,10 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
         </p>
         <div className="flex gap-3">
           <button
-            onClick={() => setState('spelling-select')}
+            onClick={() => {
+              setSpellingScope('group')
+              setState('spelling-select')
+            }}
             className="flex-1 py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl transition-colors"
           >
             拼写测试
@@ -608,7 +626,10 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
             返回
           </button>
           <button
-            onClick={() => setState('spelling-select')}
+            onClick={() => {
+              setSpellingScope('session')
+              setState('spelling-select')
+            }}
             className="flex-1 py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl transition-colors"
           >
             拼写测试
@@ -626,10 +647,15 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
 
   // 拼写测试模式选择
   if (state === 'spelling-select') {
+    const unknownCountToDisplay = spellingScope === 'group' ? groupUnknownItems.length : unknownItems.length
+    const allCountToDisplay = spellingScope === 'group' ? currentGroup.length : allWords.length
+
     return (
       <div className="p-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-bold text-gray-800">拼写测试</h3>
+          <h3 className="text-lg font-bold text-gray-800">
+            拼写测试 {spellingScope === 'group' ? `(第${groupNumber}组)` : '(全部)'}
+          </h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -638,7 +664,7 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
         </div>
         <p className="text-sm text-gray-600 mb-4">选择拼写测试范围：</p>
         <div className="space-y-3">
-          {unknownItems.length > 0 && (
+          {unknownCountToDisplay > 0 && (
             <button
               onClick={() => {
                 setSpellingMode('unknown')
@@ -653,7 +679,7 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
                 <span className="text-2xl">✍️</span>
                 <div>
                   <p className="font-medium text-red-800">仅不认识的单词</p>
-                  <p className="text-xs text-red-600">{unknownItems.length} 个单词</p>
+                  <p className="text-xs text-red-600">{unknownCountToDisplay} 个单词</p>
                 </div>
               </div>
             </button>
@@ -672,7 +698,7 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
               <span className="text-2xl">📝</span>
               <div>
                 <p className="font-medium text-blue-800">全部单词</p>
-                <p className="text-xs text-blue-600">{allWords.length} 个单词</p>
+                <p className="text-xs text-blue-600">{allCountToDisplay} 个单词</p>
               </div>
             </div>
           </button>
@@ -695,7 +721,10 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
 
   // 拼写测试
   if (state === 'spelling') {
-    const wordsToSpell = spellingMode === 'unknown' ? unknownItems : allWords
+    const wordsToSpell = spellingScope === 'group'
+      ? (spellingMode === 'unknown' ? groupUnknownItems : currentGroup)
+      : (spellingMode === 'unknown' ? unknownItems : allWords)
+    
     return (
       <div className="p-6">
         <div className="flex items-center justify-between mb-4">

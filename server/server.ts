@@ -11,6 +11,12 @@ const PORT = 3001
 app.use(cors())
 app.use(express.json())
 
+// 静态文件服务：允许下载词典文件
+const dataDir = path.join(process.cwd(), 'data')
+app.use('/data', express.static(dataDir))
+// 同时也允许直接从根路径访问（兼容旧逻辑）
+app.use(express.static(dataDir))
+
 // ==================== 类型定义 ====================
 interface TranslateRequest {
   texts: string[]

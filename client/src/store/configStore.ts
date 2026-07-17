@@ -29,6 +29,10 @@ interface ConfigState {
   availableModels: string[] // 从API动态获取的模型列表
   fetchingModels: boolean
   connectionStatus: ConnectionStatus
+  
+  // 有道词典 API 配置
+  youdaoAppKey: string
+  youdaoAppSecret: string
 
   setApiKey: (key: string) => void
   setApiUrl: (url: string) => void
@@ -36,11 +40,13 @@ interface ConfigState {
   setProvider: (name: string) => void
   setAvailableModels: (models: string[]) => void
   setConnectionStatus: (status: Partial<ConnectionStatus>) => void
+  setYoudaoConfig: (appKey: string, appSecret: string) => void
   fetchModels: () => Promise<boolean>
   loadFromStorage: () => void
   saveToStorage: () => void
   isConfigured: () => boolean
   getConfig: () => { apiKey: string; apiUrl: string; model: string }
+  getYoudaoConfig: () => { appKey: string; appSecret: string }
 }
 
 const STORAGE_KEY = 'english-exam-app-config'
@@ -57,6 +63,8 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     success: null,
     message: '',
   },
+  youdaoAppKey: '',
+  youdaoAppSecret: '',
 
   setApiKey: (apiKey) => set({ apiKey }),
   setApiUrl: (apiUrl) => set({ apiUrl }),
@@ -79,9 +87,10 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     set((state) => ({
       connectionStatus: { ...state.connectionStatus, ...status },
     })),
+  setYoudaoConfig: (youdaoAppKey, youdaoAppSecret) => set({ youdaoAppKey, youdaoAppSecret }),
 
   /**
-   * 调用后端获取可用模型列表
+   * 调用大模型 API 获取可用模型列表
    * 返回 true 表示成功
    */
   fetchModels: async () => {
@@ -94,22 +103,61 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     })
 
     try {
-      const res = await fetch('/api/models', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey, apiUrl }),
+      // 规范化 URL 并提取 base URL
+      let baseUrl = apiUrl.trim().replace(/\/+$/, '')
+      if (baseUrl.endsWith('/chat/completions')) {
+        baseUrl = baseUrl.slice(0, -('/chat/completions').length)
+      }
+      // 去掉末尾的版本路径段如 /v1, /v4 等
+      baseUrl = baseUrl.replace(/\/v\d+$/, '')
+      
+      const modelsUrl = `${baseUrl}/v1/models`
+
+      console.log(`[Models] 请求: ${modelsUrl}`)
+
+      const response = await fetch(modelsUrl, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+        },
       })
 
-      const data = await res.json()
-
-      if (data.success && Array.isArray(data.models) && data.models.length > 0) {
+      if (!response.ok) {
+        const errText = await response.text()
+        let errMsg = `获取模型列表失败 (${response.status})`
+        try {
+          const errJson = JSON.parse(errText)
+          errMsg = errJson.error?.message || errJson.message || errMsg
+        } catch {
+          // ignore
+        }
         set({
-          availableModels: data.models,
+          fetchingModels: false,
+          availableModels: [],
+          connectionStatus: {
+            testing: false,
+            success: false,
+            message: errMsg,
+          },
+        })
+        return false
+      }
+
+      const data = await response.json()
+      // OpenAI 兼容格式: { data: [{ id: "model-name", ... }, ...] }
+      const models: string[] = (data.data || [])
+        .map((m: { id?: string }) => m.id)
+        .filter(Boolean)
+        .sort()
+
+      if (models.length > 0) {
+        set({
+          availableModels: models,
           fetchingModels: false,
           connectionStatus: {
             testing: false,
             success: true,
-            message: `连接成功，获取到 ${data.models.length} 个可用模型`,
+            message: `连接成功，获取到 ${models.length} 个可用模型`,
           },
         })
         return true
@@ -120,19 +168,19 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
           connectionStatus: {
             testing: false,
             success: false,
-            message: data.error || '未获取到可用模型',
+            message: '未获取到可用模型',
           },
         })
         return false
       }
-    } catch {
+    } catch (err: any) {
       set({
         fetchingModels: false,
         availableModels: [],
         connectionStatus: {
           testing: false,
           success: false,
-          message: '无法连接到后端服务，请确认服务已启动',
+          message: `连接失败: ${err.message || err}`,
         },
       })
       return false
@@ -149,6 +197,8 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
           apiUrl: data.apiUrl || API_PROVIDERS[0].url,
           model: data.model || '',
           providerName: data.providerName || API_PROVIDERS[0].name,
+          youdaoAppKey: data.youdaoAppKey || '',
+          youdaoAppSecret: data.youdaoAppSecret || '',
         })
       }
     } catch {
@@ -157,10 +207,10 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   },
 
   saveToStorage: () => {
-    const { apiKey, apiUrl, model, providerName } = get()
+    const { apiKey, apiUrl, model, providerName, youdaoAppKey, youdaoAppSecret } = get()
     localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ apiKey, apiUrl, model, providerName })
+      JSON.stringify({ apiKey, apiUrl, model, providerName, youdaoAppKey, youdaoAppSecret })
     )
   },
 
@@ -172,5 +222,10 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   getConfig: () => {
     const { apiKey, apiUrl, model } = get()
     return { apiKey, apiUrl, model }
+  },
+
+  getYoudaoConfig: () => {
+    const { youdaoAppKey, youdaoAppSecret } = get()
+    return { appKey: youdaoAppKey, appSecret: youdaoAppSecret }
   },
 }))

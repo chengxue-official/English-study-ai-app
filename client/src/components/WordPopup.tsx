@@ -2,6 +2,7 @@ import { useDictStore, type WordDetail, type WordUsage } from '../store/dictStor
 import { useCollectionStore } from '../store/collectionStore'
 import { useState, useEffect } from 'react'
 import { speakWord } from '../utils/speak'
+import { dbService } from '../services/database'
 
 // 考试标签的中文名和颜色
 const TAG_MAP: Record<string, { label: string; color: string }> = {
@@ -153,10 +154,14 @@ function WordDetailContent({ word, onClose }: { word: WordDetail; onClose: () =>
       const key = `word:${word.word.toLowerCase()}`
       if (collectedMap.get(key)) {
         // 需要通过列表查找id
-        const res = await fetch(`/api/collection?type=word&search=${encodeURIComponent(word.word.toLowerCase())}&pageSize=1`)
-        const data = await res.json()
-        if (data.items?.length > 0) {
-          const item = data.items.find((i: { content: string }) => i.content.toLowerCase() === word.word.toLowerCase())
+        const result = await dbService.getCollectionItems({
+          type: 'word',
+          search: word.word.toLowerCase(),
+          page: 1,
+          pageSize: 1
+        })
+        if (result.items.length > 0) {
+          const item = result.items.find((i: { content: string }) => i.content.toLowerCase() === word.word.toLowerCase())
           if (item) {
             await removeCollection(item.id)
             setIsCollected(false)
@@ -215,7 +220,7 @@ function WordDetailContent({ word, onClose }: { word: WordDetail; onClose: () =>
               <span className="text-sm text-blue-600 font-serif">{word.phonetic}</span>
             )}
             <button
-              onClick={() => speakWord(word.word)}
+              onClick={() => speakWord(word.word, word.speakUrl)}
               className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-blue-50 hover:bg-blue-100 text-blue-600 transition-colors"
               title="朗读单词"
             >
@@ -226,6 +231,16 @@ function WordDetailContent({ word, onClose }: { word: WordDetail; onClose: () =>
           </div>
         </div>
         <div className="flex items-center gap-1.5">
+          {word.source === 'youdao' && (
+            <span className="px-2 py-0.5 text-[10px] font-medium rounded-full bg-blue-50 text-blue-600 border border-blue-100">
+              有道在线
+            </span>
+          )}
+          {word.source === 'youdao_official' && (
+            <span className="px-2 py-0.5 text-[10px] font-medium rounded-full bg-amber-50 text-amber-600 border border-amber-100">
+              有道官方
+            </span>
+          )}
           <button
             onClick={handleToggleCollect}
             className={`p-1.5 rounded-lg transition-colors ${isCollected ? 'text-amber-500 bg-amber-50 hover:bg-amber-100' : 'text-gray-400 hover:text-amber-500 hover:bg-amber-50'}`}
@@ -398,7 +413,7 @@ function WordDetailContent({ word, onClose }: { word: WordDetail; onClose: () =>
                       <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L7 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
                     </svg>
                   )}
-                  {highlightPosInText(tr)}
+                  {highlightPosInText(tr, handleNestedLookup)}
                 </p>
               )
             })}

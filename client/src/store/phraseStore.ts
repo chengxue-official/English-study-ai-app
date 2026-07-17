@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { dbService } from '../services/database'
 
 export interface PhraseMatch {
   phrase: string
@@ -29,8 +30,6 @@ interface PhraseState {
   clearSelection: () => void
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE || ''
-
 export const usePhraseStore = create<PhraseState>((set, get) => ({
   phraseResults: [],
   scanning: false,
@@ -40,7 +39,7 @@ export const usePhraseStore = create<PhraseState>((set, get) => ({
   selectedSourceSentence: null,
   selectedSourceTranslation: null,
 
-  scanPhrases: async (paragraphs: string[], translations: string[]) => {
+  scanPhrases: async (paragraphs: string[], _translations: string[]) => {
     set({ scanning: true, error: null })
     try {
       const results: ParagraphPhrases[] = []
@@ -50,26 +49,11 @@ export const usePhraseStore = create<PhraseState>((set, get) => ({
         if (!text || text.trim().length === 0) continue
 
         try {
-          const res = await fetch(`${API_BASE}/api/scan-phrases`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              text,
-              sentence: text,
-              sentenceTranslation: translations[i] || '',
-            }),
-          })
-
-          if (!res.ok) {
-            console.warn(`[Phrases] 段落${i}扫描失败: ${res.status}`)
-            continue
-          }
-
-          const data = await res.json()
-          if (data.found && data.phrases.length > 0) {
+          const phrases = await dbService.scanPhrases(text)
+          if (phrases.length > 0) {
             results.push({
               paragraphIndex: i,
-              phrases: data.phrases,
+              phrases,
             })
           }
         } catch (err) {

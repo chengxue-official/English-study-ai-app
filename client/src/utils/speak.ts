@@ -20,35 +20,53 @@ export function stopSpeaking() {
 
 /**
  * 朗读单词 - 移动端兼容版
- * 优先使用在线真人发音（有道词典API），失败回退Web Speech API TTS
- * 关键：TTS使用预加载voices同步调用，保持iOS用户手势链不断裂
+ * 优先使用提供的 URL 或在线真人发音（有道词典API），失败回退Web Speech API TTS
  */
-export function speakWord(word: string) {
-  console.log('[发音] 开始:', word, '| speechSynthesis可用:', !!window.speechSynthesis, '| voices预加载:', cachedVoices.length)
+export function speakWord(word: string, url?: string) {
+  console.log('[发音] 开始:', word, '| URL:', url, '| speechSynthesis可用:', !!window.speechSynthesis)
 
   // 停止上一次播放
   if (lastAudio) { lastAudio.pause(); lastAudio.currentTime = 0; lastAudio = null }
   if (window.speechSynthesis) window.speechSynthesis.cancel()
 
-  // 优先：在线真人发音（有道词典API，type=2女声，type=1男声）
+  // 1. 优先：使用提供的 URL (如果有)
+  if (url) {
+    try {
+      const audio = new Audio(url)
+      lastAudio = audio
+      audio.play().then(() => {
+        console.log('[发音] 指定 URL 发音成功')
+      }).catch((e) => {
+        console.log('[发音] 指定 URL 发音失败:', e?.message || e, '→ 回退默认在线发音')
+        lastAudio = null
+        speakDefaultOnline(word)
+      })
+      return
+    } catch (e) {
+      console.log('[发音] 指定 URL Audio 创建异常:', e, '→ 回退默认在线发音')
+    }
+  }
+
+  speakDefaultOnline(word)
+}
+
+/** 默认在线发音逻辑 */
+function speakDefaultOnline(word: string) {
   try {
     const audioUrl = `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(word)}&type=2`
     const audio = new Audio(audioUrl)
     lastAudio = audio
     audio.play().then(() => {
-      console.log('[发音] 在线真人发音成功')
+      console.log('[发音] 默认在线真人发音成功')
     }).catch((e) => {
-      console.log('[发音] 在线发音失败:', e?.message || e, '→ 回退TTS')
+      console.log('[发音] 默认在线发音失败:', e?.message || e, '→ 回退TTS')
       lastAudio = null
       speakWithTTS(word)
     })
-    return
   } catch (e) {
-    console.log('[发音] Audio创建异常:', e, '→ 回退TTS')
+    console.log('[发音] 默认在线 Audio 创建异常:', e, '→ 回退TTS')
+    speakWithTTS(word)
   }
-
-  // 直接回退TTS
-  speakWithTTS(word)
 }
 
 /** Web Speech API TTS回退方案 - 同步调用保持用户手势链 */

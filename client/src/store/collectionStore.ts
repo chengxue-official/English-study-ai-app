@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { dbService } from '../services/database'
 
 // 收藏项类型
 export type CollectionType = 'word' | 'phrase' | 'grammar' | 'sentence'
@@ -79,21 +80,14 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
     set({ loading: true, error: null })
 
     try {
-      const params = new URLSearchParams()
-      params.set('page', String(page))
-      params.set('pageSize', String(state.pageSize))
-      if (state.filterType !== 'all') params.set('type', state.filterType)
-      if (state.filterTag) params.set('tag', state.filterTag)
-      if (state.searchQuery) params.set('search', state.searchQuery)
-      if (dueReview) params.set('dueReview', 'true')
-
-      const res = await fetch(`/api/collection?${params}`)
-      const data = await res.json()
-
-      if (!res.ok) {
-        set({ loading: false, error: data.error || '获取收藏列表失败' })
-        return
-      }
+      const data = await dbService.getCollectionItems({
+        page,
+        pageSize: state.pageSize,
+        type: state.filterType,
+        tag: state.filterTag || undefined,
+        search: state.searchQuery || undefined,
+        dueReview,
+      })
 
       set({
         items: reset ? data.items : [...state.items, ...data.items],
@@ -101,21 +95,14 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
         page,
         loading: false,
       })
-    } catch (err) {
-      set({ loading: false, error: '网络错误' })
+    } catch (err: any) {
+      set({ loading: false, error: `获取收藏列表失败: ${err.message || err}` })
     }
   },
 
   addCollection: async (params) => {
     try {
-      const res = await fetch('/api/collection', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params),
-      })
-      const data = await res.json()
-
-      if (!res.ok) return null
+      const result = await dbService.addCollection(params)
 
       // 更新本地缓存
       const key = `${params.type}:${params.content}`
@@ -127,7 +114,7 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
       get().fetchItems(true)
       get().fetchStats()
 
-      return { id: data.id, createdAt: data.createdAt }
+      return result
     } catch {
       return null
     }
@@ -135,7 +122,7 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
 
   removeCollection: async (id) => {
     try {
-      await fetch(`/api/collection/${id}`, { method: 'DELETE' })
+      await dbService.removeCollection(id)
 
       // 更新本地状态
       set(state => {
@@ -163,9 +150,7 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
     if (cached !== undefined) return cached
 
     try {
-      const res = await fetch(`/api/collection/check?type=${type}&content=${encodeURIComponent(content)}`)
-      const data = await res.json()
-      const collected = !!data.collected
+      const collected = await dbService.checkCollected(type, content)
 
       const newMap = new Map(get().collectedMap)
       newMap.set(key, collected)
@@ -179,11 +164,8 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
 
   fetchStats: async () => {
     try {
-      const res = await fetch('/api/collection/stats')
-      const data = await res.json()
-      if (res.ok) {
-        set({ stats: { total: data.total, byType: data.byType } })
-      }
+      const data = await dbService.getCollectionStats()
+      set({ stats: data })
     } catch {
       // ignore
     }
@@ -191,12 +173,7 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
 
   updateReview: async (id, known = true) => {
     try {
-      const res = await fetch(`/api/collection/${id}/review`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ known }),
-      })
-      const data = await res.json()
+      const data = await dbService.updateReview(id, known)
       return data.success ? { nextReviewAt: data.nextReviewAt, days: data.days } : null
     } catch {
       return null
@@ -205,9 +182,8 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
 
   advanceReview: async (id) => {
     try {
-      const res = await fetch(`/api/collection/${id}/advance-review`, { method: 'POST' })
-      const data = await res.json()
-      return !!data.success
+      const success = await dbService.advanceReview(id)
+      return success
     } catch {
       return false
     }
