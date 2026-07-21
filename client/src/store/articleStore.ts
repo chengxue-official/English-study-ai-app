@@ -59,6 +59,10 @@ export const useArticleStore = create<ArticleState>((set, get) => ({
       const texts = paragraphs.map((p) => p.original)
       const translations = await llmService.translate(texts)
 
+      if (translations.length !== texts.length) {
+        console.warn(`[ArticleStore] 翻译结果数量(${translations.length})与原文段落数(${texts.length})不一致`)
+      }
+
       set((state) => ({
         paragraphs: state.paragraphs.map((p, i) => ({
           ...p,
@@ -66,6 +70,8 @@ export const useArticleStore = create<ArticleState>((set, get) => ({
           isTranslating: false,
         })),
         isTranslating: false,
+        // 如果长度不一致，给用户一个微弱的提示
+        error: translations.length !== texts.length ? '部分段落翻译可能存在错位，建议重新翻译或分段导入' : null
       }))
     } catch (err: any) {
       set({

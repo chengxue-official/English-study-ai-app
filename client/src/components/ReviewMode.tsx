@@ -5,6 +5,7 @@ import { speakWord, stopSpeaking } from '../utils/speak'
 import type { WordDetail } from '../store/dictStore'
 import { dbService } from '../services/database'
 import { llmService } from '../services/llm'
+import { cleanMnemonic } from '../utils/text'
 
 // 词性缩写映射
 const POS_LABELS: Record<string, string> = {
@@ -197,7 +198,7 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
       // 1. 尝试从本地缓存获取
       const cached = await dbService.getWordContext(cacheKey)
       if (cached && typeof cached === 'string') {
-        setMnemonicData(cached)
+        setMnemonicData(cleanMnemonic(cached))
         setMnemonicLoading(false)
         return
       }
@@ -206,7 +207,7 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
       const mnemonic = await llmService.getWordMnemonic(word)
       if (mnemonic) {
         await dbService.saveWordContext(cacheKey, word, mnemonic)
-        setMnemonicData(mnemonic)
+        setMnemonicData(cleanMnemonic(mnemonic))
       } else {
         setMnemonicData('未能生成助记内容，请稍后再试。')
       }

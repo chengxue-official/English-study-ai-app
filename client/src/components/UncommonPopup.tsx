@@ -14,7 +14,7 @@ export default function UncommonPopup() {
   useEffect(() => {
     if (selectedWord) {
       setVisible(true)
-      checkCollected('word', selectedWord.word.toLowerCase()).then(setIsCollected)
+      checkCollected('word', selectedWord.word.toLowerCase()).then(id => setIsCollected(id !== null))
     } else {
       setVisible(false)
     }
@@ -23,7 +23,7 @@ export default function UncommonPopup() {
   // 收藏状态可能随items变化
   useEffect(() => {
     if (selectedWord) {
-      checkCollected('word', selectedWord.word.toLowerCase()).then(setIsCollected)
+      checkCollected('word', selectedWord.word.toLowerCase()).then(id => setIsCollected(id !== null))
     }
   }, [items, selectedWord, checkCollected])
 
@@ -52,29 +52,32 @@ export default function UncommonPopup() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
       onClick={clearSelection}
     >
-      <div className="fixed inset-0 bg-black/20" />
+      <div className="fixed inset-0 bg-black/20 backdrop-blur-[2px]" />
       <div
-        className="relative bg-white rounded-2xl shadow-xl border border-gray-200 max-w-sm w-full mx-4 p-5"
+        className="relative bg-white/95 backdrop-blur-md rounded-[2rem] shadow-2xl border border-white/20 max-w-sm w-full p-6 overflow-hidden"
         onClick={e => e.stopPropagation()}
       >
         {/* 头部 */}
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <span className="text-xs px-2 py-0.5 bg-red-50 text-red-700 rounded font-medium">
-              熟词生义
-            </span>
-            <h3 className="text-base font-bold text-gray-900">{selectedWord.word}</h3>
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-rose-50 rounded-xl border border-rose-100">
+              <span className="text-lg">💡</span>
+            </div>
+            <div>
+              <span className="text-[10px] font-black text-rose-600 uppercase tracking-wider block">Uncommon Meaning</span>
+              <h3 className="text-lg font-black text-gray-900 tracking-tight">{selectedWord.word}</h3>
+            </div>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-2">
             {/* 收藏按钮 */}
             <button
               onClick={handleToggleCollect}
-              className={`p-1.5 rounded-lg transition-colors ${
+              className={`p-2.5 rounded-2xl transition-all ${
                 isCollected
-                  ? 'text-amber-500 hover:bg-amber-50'
+                  ? 'text-amber-500 bg-amber-50 shadow-inner'
                   : 'text-gray-300 hover:bg-gray-100 hover:text-amber-400'
               }`}
               title={isCollected ? '取消收藏' : '收藏此熟词生义'}
@@ -86,9 +89,9 @@ export default function UncommonPopup() {
             {/* 关闭按钮 */}
             <button
               onClick={clearSelection}
-              className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              className="p-2.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-2xl transition-all"
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
@@ -96,40 +99,45 @@ export default function UncommonPopup() {
         </div>
 
         {/* 含义对比 */}
-        <div className="mb-3 space-y-2">
-          <div className="flex items-center gap-3 p-2.5 bg-gray-50 rounded-lg">
-            <span className="text-xs text-gray-400 whitespace-nowrap">常见义</span>
-            <span className="text-sm text-gray-600">{selectedWord.commonMeaning}</span>
+        <div className="mb-5 space-y-3">
+          <div className="flex items-center gap-4 p-3 bg-gray-50/80 rounded-2xl border border-gray-100">
+            <span className="text-[10px] font-black text-gray-400 uppercase tracking-wider whitespace-nowrap">Common</span>
+            <span className="text-sm font-medium text-gray-600">{selectedWord.commonMeaning}</span>
           </div>
           <div className="flex items-center justify-center">
-            <svg className="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-            </svg>
+            <div className="p-1.5 bg-rose-50 rounded-full border border-rose-100">
+              <svg className="w-4 h-4 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+              </svg>
+            </div>
           </div>
-          <div className="flex items-center gap-3 p-2.5 bg-red-50 rounded-lg border border-red-100">
-            <span className="text-xs text-red-400 whitespace-nowrap">本文义</span>
-            <span className="text-sm font-medium text-red-700">{selectedWord.contextMeaning}</span>
+          <div className="flex items-center gap-4 p-4 bg-rose-50 border border-rose-100 rounded-2xl shadow-sm">
+            <span className="text-[10px] font-black text-rose-400 uppercase tracking-wider whitespace-nowrap">Context</span>
+            <span className="text-base font-black text-rose-900">{selectedWord.contextMeaning}</span>
           </div>
         </div>
 
         {/* 原因说明 */}
         {selectedWord.reason && (
-          <div className="mb-3 p-2.5 bg-amber-50/50 rounded-lg border border-amber-100">
-            <p className="text-xs text-gray-600">
-              <span className="text-amber-500 mr-1">💡</span>{selectedWord.reason}
+          <div className="mb-5 p-4 bg-amber-50/50 rounded-2xl border border-amber-100/50">
+            <p className="text-sm text-amber-900/80 leading-relaxed">
+              <span className="text-amber-500 mr-2">💡</span>{selectedWord.reason}
             </p>
           </div>
         )}
 
         {/* 来源句子 */}
         {selectedSourceSentence && (
-          <div className="p-2.5 bg-gray-50 rounded-lg border border-gray-100">
-            <p className="text-xs text-gray-500 mb-1">
-              <span className="text-gray-400">来源：</span>{selectedSourceSentence}
+          <div className="p-4 bg-gray-50/50 rounded-2xl border border-gray-100/50">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[10px] font-black text-gray-400 uppercase tracking-wider">Source</span>
+            </div>
+            <p className="text-sm text-gray-600 italic leading-relaxed">
+              "{selectedSourceSentence}"
             </p>
             {selectedSourceTranslation && (
-              <p className="text-xs text-gray-500">
-                <span className="text-gray-400">译文：</span>{selectedSourceTranslation}
+              <p className="text-xs text-gray-400 mt-2 font-medium">
+                {selectedSourceTranslation}
               </p>
             )}
           </div>

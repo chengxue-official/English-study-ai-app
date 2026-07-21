@@ -3,6 +3,8 @@ import cors from 'cors'
 import Database from 'better-sqlite3'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import multer from 'multer'
+import fs from 'fs'
 
 const app = express()
 const PORT = 3001
@@ -10,6 +12,9 @@ const PORT = 3001
 // 中间件
 app.use(cors())
 app.use(express.json())
+
+// 配置文件上传
+const upload = multer({ dest: 'uploads/' })
 
 // 静态文件服务：允许下载词典文件
 const dataDir = path.join(process.cwd(), 'data')
@@ -206,13 +211,22 @@ let dictDb: Database.Database | null = null
 
 function getDictDb(): Database.Database | null {
   if (dictDb) return dictDb
-  const dbPath = path.join(process.cwd(), 'data', 'stardict.db')
+  
+  const fullDbPath = path.join(process.cwd(), 'data', 'stardict_full.db')
+  const liteDbPath = path.join(process.cwd(), 'data', 'stardict.db')
+  
+  let dbPath = liteDbPath
+  if (fs.existsSync(fullDbPath)) {
+    dbPath = fullDbPath
+    console.log(`[Dictionary] 发现 Ultimate 版词典，优先使用: ${dbPath}`)
+  }
+
   try {
     dictDb = new Database(dbPath, { readonly: true })
     console.log(`[Dictionary] 词典数据库已加载: ${dbPath}`)
     return dictDb
   } catch (err) {
-    console.warn(`[Dictionary] 词典数据库未找到，查词功能不可用: ${dbPath}`)
+    console.warn(`[Dictionary] 词典数据库未找到或加载失败，查词功能不可用: ${dbPath}`)
     return null
   }
 }
@@ -1809,6 +1823,115 @@ app.post('/api/word-mnemonic', async (req, res) => {
   } catch (err) {
     console.error('助记生成错误:', err)
     res.status(500).json({ error: err instanceof Error ? err.message : '助记生成失败' })
+  }
+})
+
+// ==================== OCR 识别 ====================
+
+app.post('/api/ocr', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      res.status(400).json({ error: '请上传图片文件' })
+      return
+    }
+
+    const JOB_URL = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
+    const TOKEN = "9658a109a67edf61a60b83b282de50e44bbd05ba"
+    const MODEL = "PaddleOCR-VL-1.6"
+
+    const headers = {
+      "Authorization": `bearer ${TOKEN}`
+    }
+
+    const optionalPayload = {
+      useDocOrientationClassify: false,
+      useDocUnwarping: false,
+      useChartRecognition: false
+    }
+
+    const formData = new FormData()
+    formData.append('model', MODEL)
+    formData.append('optionalPayload', JSON.stringify(optionalPayload))
+    
+    const fileBuffer = fs.readFileSync(req.file.path)
+    const blob = new Blob([fileBuffer], { type: req.file.mimetype })
+    formData.append('file', blob, req.file.originalname)
+
+    console.log(`[OCR] 提交任务: ${req.file.originalname}`)
+    const jobResponse = await fetch(JOB_URL, {
+      method: 'POST',
+      headers,
+      body: formData
+    })
+
+    if (!jobResponse.ok) {
+      const text = await jobResponse.text()
+      throw new Error(`提交任务失败: ${text}`)
+    }
+
+    const jobData = await jobResponse.json()
+    const jobId = jobData.data.jobId
+    console.log(`[OCR] 任务提交成功, jobId: ${jobId}`)
+
+    // 轮询状态
+    let jsonlUrl = ""
+    while (true) {
+      const statusResponse = await fetch(`${JOB_URL}/${jobId}`, { headers })
+      if (!statusResponse.ok) throw new Error('查询状态失败')
+      
+      const statusData = await statusResponse.json()
+      const state = statusData.data.state
+      
+      if (state === 'done') {
+        jsonlUrl = statusData.data.resultUrl.jsonUrl
+        console.log(`[OCR] 任务完成`)
+        break
+      } else if (state === 'failed') {
+        throw new Error(`任务失败: ${statusData.data.errorMsg}`)
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 3000))
+    }
+
+    // 获取结果
+    const jsonlResponse = await fetch(jsonlUrl)
+    if (!jsonlResponse.ok) throw new Error('获取结果失败')
+    
+    const jsonlText = await jsonlResponse.text()
+    const lines = jsonlText.trim().split('\n')
+    
+    let markdownText = ""
+    for (const line of lines) {
+      if (!line.trim()) continue
+      const result = JSON.parse(line).result
+      for (const res of result.layoutParsingResults) {
+        markdownText += res.markdown.text + "\n\n"
+      }
+    }
+
+    // 过滤 Markdown 字符
+    const plainText = markdownText
+      .replace(/(\*\*|__)(.*?)\1/g, '$2') // 粗体
+      .replace(/(\*|_)(.*?)\1/g, '$2') // 斜体
+      .replace(/~~(.*?)~~/g, '$1') // 删除线
+      .replace(/`{1,3}([^`]+)`{1,3}/g, '$1') // 代码块
+      .replace(/\[(.*?)\]\(.*?\)/g, '$1') // 链接
+      .replace(/^#+\s+(.*)$/gm, '$1') // 标题
+      .replace(/^\s*[-*+]\s+(.*)$/gm, '$1') // 无序列表
+      .replace(/^\s*\d+\.\s+(.*)$/gm, '$1') // 有序列表
+      .replace(/^\s*>\s+(.*)$/gm, '$1') // 引用
+      .trim()
+
+    // 清理上传的文件
+    fs.unlinkSync(req.file.path)
+
+    res.json({ text: plainText })
+  } catch (err) {
+    console.error('OCR 错误:', err)
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path)
+    }
+    res.status(500).json({ error: err instanceof Error ? err.message : 'OCR 识别失败' })
   }
 })
 

@@ -33,8 +33,8 @@ interface CollectionState {
   searchQuery: string
   // 统计
   stats: { total: number; byType: Record<string, number> } | null
-  // 收藏状态缓存（用于快速判断是否已收藏）
-  collectedMap: Map<string, boolean> // key: "type:content"
+  // 收藏状态缓存（用于快速判断是否已收藏并获取ID）
+  collectedMap: Map<string, number | null> // key: "type:content", value: id or null
 
   // 操作
   fetchItems: (reset?: boolean, dueReview?: boolean) => Promise<void>
@@ -49,7 +49,7 @@ interface CollectionState {
     extra?: Record<string, unknown>
   }) => Promise<{ id: number; createdAt: number } | null>
   removeCollection: (id: number) => Promise<void>
-  checkCollected: (type: CollectionType, content: string) => Promise<boolean>
+  checkCollected: (type: CollectionType, content: string) => Promise<number | null>
   fetchStats: () => Promise<void>
   updateReview: (id: number, known?: boolean) => Promise<{ nextReviewAt?: number; days?: number } | null>
   advanceReview: (id: number) => Promise<boolean>
@@ -101,13 +101,18 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
   },
 
   addCollection: async (params) => {
+    const timestamp = Date.now()
+    console.log(`[CollectionStore] [${timestamp}] addCollection start:`, params.content)
     try {
       const result = await dbService.addCollection(params)
+      console.log(`[CollectionStore] [${timestamp}] addCollection db result:`, result)
 
       // 更新本地缓存
-      const key = `${params.type}:${params.content}`
+      const cleanedContent = params.content.toLowerCase().trim()
+      const key = `${params.type}:${cleanedContent}`
       const newMap = new Map(get().collectedMap)
-      newMap.set(key, true)
+      newMap.set(key, result.id)
+      console.log(`[CollectionStore] [${timestamp}] Updating collectedMap: ${key} -> ${result.id}`)
       set({ collectedMap: newMap })
 
       // 刷新列表和统计
@@ -115,12 +120,15 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
       get().fetchStats()
 
       return result
-    } catch {
+    } catch (err) {
+      console.error(`[CollectionStore] [${timestamp}] addCollection error:`, err)
       return null
     }
   },
 
   removeCollection: async (id) => {
+    const timestamp = Date.now()
+    console.log(`[CollectionStore] [${timestamp}] removeCollection start:`, id)
     try {
       await dbService.removeCollection(id)
 
@@ -129,7 +137,19 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
         const removedItem = state.items.find(i => i.id === id)
         const newMap = new Map(state.collectedMap)
         if (removedItem) {
-          newMap.delete(`${removedItem.type}:${removedItem.content}`)
+          const cleanedContent = removedItem.content.toLowerCase().trim()
+          const key = `${removedItem.type}:${cleanedContent}`
+          console.log(`[CollectionStore] [${timestamp}] Removing from collectedMap: ${key}`)
+          newMap.delete(key)
+        } else {
+          // 如果不在当前列表中，遍历 map 找到对应的 key 并删除
+          for (const [key, value] of newMap.entries()) {
+            if (value === id) {
+              console.log(`[CollectionStore] [${timestamp}] Removing from collectedMap by value search: ${key}`)
+              newMap.delete(key)
+              break
+            }
+          }
         }
         return {
           items: state.items.filter(item => item.id !== id),
@@ -139,26 +159,42 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
       })
 
       get().fetchStats()
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error(`[CollectionStore] [${timestamp}] removeCollection error:`, err)
     }
   },
 
   checkCollected: async (type, content) => {
-    const key = `${type}:${content}`
+    const timestamp = Date.now()
+    const cleanedContent = content.toLowerCase().trim()
+    const key = `${type}:${cleanedContent}`
+    
     const cached = get().collectedMap.get(key)
-    if (cached !== undefined) return cached
+    if (cached !== undefined && cached !== null) {
+      console.log(`[CollectionStore] [${timestamp}] checkCollected cache hit: ${key} -> ${cached}`)
+      return cached
+    }
 
+    console.log(`[CollectionStore] [${timestamp}] checkCollected db query start: ${key}`)
     try {
-      const collected = await dbService.checkCollected(type, content)
+      const id = await dbService.checkCollected(type, cleanedContent)
+      
+      // 再次检查缓存，防止在异步查询期间 addCollection 已经更新了它
+      const currentCached = get().collectedMap.get(key)
+      if (currentCached !== undefined && currentCached !== null) {
+        console.log(`[CollectionStore] [${timestamp}] checkCollected db query finished, but cache already updated by someone else. Skipping overwrite. Current: ${currentCached}, DB: ${id}`)
+        return currentCached
+      }
 
+      console.log(`[CollectionStore] [${timestamp}] checkCollected db query result: ${key} -> ${id}`)
       const newMap = new Map(get().collectedMap)
-      newMap.set(key, collected)
+      newMap.set(key, id)
       set({ collectedMap: newMap })
 
-      return collected
-    } catch {
-      return false
+      return id
+    } catch (err) {
+      console.error(`[CollectionStore] [${timestamp}] checkCollected error:`, err)
+      return null
     }
   },
 

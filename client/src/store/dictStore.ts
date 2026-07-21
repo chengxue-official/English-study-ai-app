@@ -2,16 +2,10 @@ import { create } from 'zustand'
 import { useConfigStore } from './configStore'
 import { dbService, DictEntry } from '../services/database'
 import { llmService } from '../services/llm'
-import { YoudaoService } from '../services/youdao'
+import { XxApiService } from '../services/xxapi'
+import { cleanMnemonic } from '../utils/text'
 
 export type WordDetail = DictEntry
-
-export interface WordUsage {
-  collocations: { en: string; zh: string }[]
-  phrases: { en: string; zh: string }[]
-  usage: { point: string; example: string; translation: string }[]
-  cached?: boolean  // 是否来自本地缓存
-}
 
 export interface WordUsage {
   collocations: { en: string; zh: string }[]
@@ -138,18 +132,34 @@ export const useDictStore = create<DictState>((set) => ({
     set({ loading: true, currentWord: null, notFound: null, error: null, usageLoading: false, wordUsage: null, usageError: null, contextLoading: false, contextInfo: null, contextError: null, lastContextParams: null, mnemonicLoading: false, wordMnemonic: null, mnemonicError: null, contextSentence: '', contextTranslation: '', localMatchedIndex: -1 })
 
     try {
-      const result = await dbService.queryWord(cleaned)
+      const { dictSource } = useConfigStore.getState().getConfig()
+      let foundLocal = false
+      let localData = null
 
-      if (result.found && result.data) {
-        set({ loading: false, currentWord: result.data, notFound: null, error: null })
+      // 1. 如果允许本地查询，先查本地
+      if (dictSource === 'auto' || dictSource === 'local') {
+        const result = await dbService.queryWord(cleaned)
+        if (result.found && result.data) {
+          foundLocal = true
+          localData = result.data
+        }
+      }
+
+      if (foundLocal && localData) {
+        set({ loading: false, currentWord: localData, notFound: null, error: null })
       } else {
-        // 本地未找到，尝试在线查询
-        console.log(`[lookupWord] 本地未找到 ${cleaned}，尝试在线查询...`)
-        const onlineResult = await YoudaoService.fetchWord(cleaned)
-        if (onlineResult) {
-          set({ loading: false, currentWord: onlineResult, notFound: null, error: null })
+        // 2. 本地未找到或仅允许在线查询，尝试在线查询
+        if (dictSource === 'auto' || dictSource === 'online') {
+          console.log(`[lookupWord] 尝试在线查询 ${cleaned}...`)
+          const onlineResult = await XxApiService.fetchWord(cleaned)
+          if (onlineResult) {
+            set({ loading: false, currentWord: onlineResult, notFound: null, error: null })
+          } else {
+            set({ loading: false, currentWord: null, notFound: cleaned, error: null })
+          }
         } else {
-          set({ loading: false, currentWord: null, notFound: result.word || cleaned, error: null })
+          // 仅本地且未找到
+          set({ loading: false, currentWord: null, notFound: cleaned, error: null })
         }
       }
     } catch (err: any) {
@@ -301,7 +311,7 @@ export const useDictStore = create<DictState>((set) => ({
       if (!forceRefresh) {
         const cached = await dbService.getWordContext(cacheKey)
         if (cached && typeof cached === 'string') {
-          set({ mnemonicLoading: false, wordMnemonic: cached, mnemonicError: null })
+          set({ mnemonicLoading: false, wordMnemonic: cleanMnemonic(cached), mnemonicError: null })
           return
         }
       }
@@ -316,7 +326,7 @@ export const useDictStore = create<DictState>((set) => ({
       if (result) {
         // 保存到本地缓存
         await dbService.saveWordContext(cacheKey, cleaned, result)
-        set({ mnemonicLoading: false, wordMnemonic: result, mnemonicError: null })
+        set({ mnemonicLoading: false, wordMnemonic: cleanMnemonic(result), mnemonicError: null })
       } else {
         set({ mnemonicLoading: false, wordMnemonic: null, mnemonicError: '未获取到助记内容' })
       }

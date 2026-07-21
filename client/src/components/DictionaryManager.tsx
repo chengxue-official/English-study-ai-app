@@ -8,22 +8,39 @@ interface DictionaryManagerProps {
 }
 
 export default function DictionaryManager({ onComplete, forceShow, onClose }: DictionaryManagerProps) {
-  const [status, setStatus] = useState<'checking' | 'missing' | 'downloading' | 'ready' | 'error'>('checking')
+  const [status, setStatus] = useState<'checking' | 'missing' | 'downloading' | 'importing' | 'ready' | 'error'>('checking')
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [fileSize, setFileSize] = useState<string>('未知')
+  const [currentDictInfo, setCurrentDictInfo] = useState<string>('')
+  const [installedType, setInstalledType] = useState<'lite' | 'full' | null>(null)
 
   useEffect(() => {
     if (forceShow) {
+      checkCurrentDict()
       setStatus('missing')
     } else {
       checkStatus()
     }
   }, [forceShow])
 
+  const checkCurrentDict = async () => {
+    if (dbService.isDictLoaded()) {
+      const size = await dbService.getDictSize()
+      if (size > 0) {
+        const mb = (size / 1024 / 1024).toFixed(1)
+        const isFull = size > 50 * 1024 * 1024
+        const type = isFull ? 'Ultimate 版' : '精简版'
+        setInstalledType(isFull ? 'full' : 'lite')
+        setCurrentDictInfo(`当前已安装: ${type} (${mb} MB)`)
+      }
+    }
+  }
+
   const checkStatus = async () => {
     try {
       console.log('[DictionaryManager] 正在检查词典状态...')
+      setStatus('checking')
       
       // 尝试初始化数据库服务
       await dbService.init()
@@ -35,24 +52,37 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
         return
       }
 
+      console.log('[DictionaryManager] 词典未加载，显示下载选项')
       setStatus('missing')
-    } catch (err) {
+    } catch (err: any) {
       console.error('[DictionaryManager] 检查词典状态失败:', err)
       setStatus('error')
-      setError('数据库初始化失败，请检查网络或重试')
+      setError(`初始化失败: ${err?.message || '未知错误'}`)
     }
   }
 
   const startDownload = async (type: 'lite' | 'full' = 'lite') => {
+    // 查重检查
+    if (dbService.isDictLoaded()) {
+      const confirm = window.confirm("本地已存在词典文件，重新下载将覆盖现有词典。是否继续？");
+      if (!confirm) return;
+    }
+
     setStatus('downloading')
     setProgress(0)
     setError(null)
 
     // 尝试多个下载地址
+    const baseUrl = window.location.origin;
     const urls = [
-      type === 'lite' ? '/stardict.db' : '/stardict_full.db', // 优先尝试本地打包的
-      // 移除本地后端地址，确保 App 独立性
-      // 如果未来有公网 CDN，可以在此添加
+      // 1. 优先尝试当前域名下的资源
+      type === 'lite' ? `${baseUrl}/stardict.db` : `${baseUrl}/stardict_full.db`,
+      
+      // 2. 尝试更新站点
+      type === 'lite' ? 'https://english-exam-app-updates.pages.dev/stardict.db' : 'https://english-exam-app-updates.pages.dev/stardict_full.db',
+      
+      // 3. 尝试本地开发后端
+      type === 'lite' ? 'http://localhost:3001/data/stardict.db' : 'http://localhost:3001/data/stardict_full.db',
     ]
 
     let currentUrlIndex = 0
@@ -83,10 +113,15 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
 
           const data = new Uint8Array(buffer)
           try {
+            console.log('[DictionaryManager] 下载完成，开始导入数据库...')
+            setStatus('importing')
             await dbService.importDictDb(data)
+            console.log('[DictionaryManager] 数据库导入成功')
             setStatus('ready')
+            checkCurrentDict()
             onComplete?.()
           } catch (err: any) {
+            console.error('[DictionaryManager] 导入失败:', err)
             setError(`导入失败: ${err?.message || '未知错误'}`)
             setStatus('error')
           }
@@ -113,6 +148,44 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
     attemptDownload(urls[0])
   }
 
+  const handleManualImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    setStatus('importing')
+    setError(null)
+    
+    try {
+      console.log(`[DictionaryManager] 开始手动导入文件: ${file.name}, 大小: ${file.size}`)
+      const reader = new FileReader()
+      reader.onload = async (e) => {
+        try {
+          const buffer = e.target?.result as ArrayBuffer
+          if (!buffer) throw new Error('读取文件失败')
+          
+          const data = new Uint8Array(buffer)
+          await dbService.importDictDb(data)
+          console.log('[DictionaryManager] 手动导入成功')
+          setStatus('ready')
+          checkCurrentDict()
+          onComplete?.()
+        } catch (err: any) {
+          console.error('[DictionaryManager] 手动导入失败:', err)
+          setError(`导入失败: ${err?.message || '未知错误'}`)
+          setStatus('error')
+        }
+      }
+      reader.onerror = () => {
+        setError('读取文件出错')
+        setStatus('error')
+      }
+      reader.readAsArrayBuffer(file)
+    } catch (err: any) {
+      setError(`导入失败: ${err?.message || '未知错误'}`)
+      setStatus('error')
+    }
+  }
+
   const handleClose = () => {
     if (status === 'ready' || status === 'error' || status === 'missing') {
       onClose?.()
@@ -127,8 +200,8 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
         className="w-full max-w-md bg-white rounded-3xl shadow-2xl p-6 text-center border border-gray-100 animate-in fade-in slide-in-from-bottom-10 duration-300 relative"
         onClick={e => e.stopPropagation()}
       >
-        {/* 顶部关闭按钮 (仅在强制显示或就绪时显示) */}
-        {(forceShow || status === 'ready') && (
+        {/* 顶部关闭按钮 (仅在强制显示或就绪或错误时显示) */}
+        {(forceShow || status === 'ready' || status === 'error' || status === 'missing') && (
           <button 
             onClick={onClose}
             className="absolute top-4 right-4 p-2 text-gray-400 hover:text-gray-600 rounded-full hover:bg-gray-100 transition-colors"
@@ -148,24 +221,86 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
           <h2 className="text-xl font-bold text-gray-900">词典资源管理</h2>
           <p className="mt-2 text-sm text-gray-500 leading-relaxed">
             {status === 'checking' && '正在检查本地资源，请稍候...'}
-            {status === 'missing' && '本地未发现词典文件。您可以下载精简版以支持离线查词，或直接使用在线查词功能。'}
+            {status === 'missing' && (dbService.isDictLoaded() 
+              ? (currentDictInfo || '您已安装词典，可以在此切换版本或重新下载。')
+              : '本地未发现词典文件。您可以从云端下载精简版以支持离线查词，或直接使用在线查词功能。')}
             {status === 'downloading' && `正在从云端获取资源 (${fileSize})...`}
+            {status === 'importing' && '正在处理词典数据库，请勿关闭应用...'}
+            {status === 'ready' && '词典资源已就绪，您可以开始使用了。'}
             {status === 'error' && '资源获取失败'}
           </p>
         </div>
+
+        {status === 'ready' && (
+          <div className="space-y-4">
+            <div className="w-16 h-16 bg-green-50 rounded-full flex items-center justify-center mx-auto mb-4">
+              <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <button
+              onClick={handleClose}
+              className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold shadow-lg shadow-blue-200 transition-all transform active:scale-[0.98]"
+            >
+              开始使用
+            </button>
+          </div>
+        )}
 
         {status === 'missing' && (
           <div className="space-y-3">
             <button
               onClick={() => startDownload('lite')}
-              className="w-full p-4 bg-blue-50 hover:bg-blue-100 border border-blue-100 rounded-2xl text-left transition-all group"
+              className={`w-full p-4 border rounded-2xl text-left transition-all group ${installedType === 'lite' ? 'bg-blue-100 border-blue-300' : 'bg-blue-50 hover:bg-blue-100 border-blue-100'}`}
             >
               <div className="flex justify-between items-center mb-1">
-                <h3 className="font-bold text-blue-900">下载精简版 (推荐)</h3>
+                <h3 className="font-bold text-blue-900">
+                  {installedType === 'lite' ? '重新下载' : '下载'}精简版 (推荐)
+                  {installedType === 'lite' && <span className="ml-2 text-[10px] text-blue-600 font-normal">(已安装)</span>}
+                </h3>
                 <span className="text-[10px] px-2 py-0.5 bg-blue-600 text-white rounded-full">2.4MB</span>
               </div>
-              <p className="text-xs text-blue-700/70">包含中高考、四六级核心词汇，支持离线使用。</p>
+              <p className="text-xs text-blue-700/70">包含中高考、四六级核心词汇（约7400词），支持离线使用。</p>
             </button>
+
+            <button
+              onClick={() => startDownload('full')}
+              className={`w-full p-4 border rounded-2xl text-left transition-all group ${installedType === 'full' ? 'bg-purple-100 border-purple-300' : 'bg-purple-50 hover:bg-purple-100 border-purple-100'}`}
+            >
+              <div className="flex justify-between items-center mb-1">
+                <h3 className="font-bold text-purple-900">
+                  {installedType === 'full' ? '重新下载' : '下载'} Ultimate 版
+                  {installedType === 'full' && <span className="ml-2 text-[10px] text-purple-600 font-normal">(已安装)</span>}
+                </h3>
+                <span className="text-[10px] px-2 py-0.5 bg-purple-600 text-white rounded-full">616MB</span>
+              </div>
+              <p className="text-xs text-purple-700/70">包含 432万 词条，涵盖所有生僻词。建议在 Wi-Fi 环境下下载。</p>
+            </button>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => window.open('https://github.com/skywind3000/ECDICT-ultimate/releases', '_blank')}
+                className="p-3 bg-indigo-50 hover:bg-indigo-100 border border-indigo-100 rounded-2xl text-left transition-all group"
+              >
+                <div className="flex justify-between items-center mb-1">
+                  <h3 className="text-xs font-bold text-indigo-900">Ultimate (GitHub)</h3>
+                </div>
+                <p className="text-[10px] text-indigo-700/70 leading-tight">从 GitHub 获取最新 Ultimate 版资源。</p>
+              </button>
+
+              <label className="p-3 bg-emerald-50 hover:bg-emerald-100 border border-emerald-100 rounded-2xl text-left transition-all cursor-pointer group">
+                <div className="flex justify-between items-center mb-1">
+                  <h3 className="text-xs font-bold text-emerald-900">手动导入</h3>
+                </div>
+                <p className="text-[10px] text-emerald-700/70 leading-tight">选择本地 .db 文件导入词典数据库。</p>
+                <input 
+                  type="file" 
+                  accept=".db" 
+                  className="hidden" 
+                  onChange={handleManualImport}
+                />
+              </label>
+            </div>
 
             <button
               onClick={onClose}
@@ -173,24 +308,20 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
             >
               暂不下载，使用在线查词
             </button>
-            
-            <div className="pt-2">
-              <p className="text-[10px] text-gray-400">在线查词将使用有道词典接口</p>
-            </div>
           </div>
         )}
 
-        {status === 'downloading' && (
+        {(status === 'downloading' || status === 'importing') && (
           <div className="space-y-4">
             <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
               <div 
-                className="bg-blue-600 h-full transition-all duration-300 ease-out"
-                style={{ width: `${progress}%` }}
+                className={`h-full transition-all duration-300 ease-out ${status === 'importing' ? 'bg-emerald-500 animate-pulse' : 'bg-blue-600'}`}
+                style={{ width: `${status === 'importing' ? 100 : progress}%` }}
               />
             </div>
             <div className="flex justify-between text-sm text-gray-500">
-              <span>下载进度</span>
-              <span className="font-mono font-bold text-blue-600">{progress}%</span>
+              <span>{status === 'importing' ? '正在导入并保存到本地...' : '下载进度'}</span>
+              <span className="font-mono font-bold text-blue-600">{status === 'importing' ? '请稍候' : `${progress}%`}</span>
             </div>
           </div>
         )}

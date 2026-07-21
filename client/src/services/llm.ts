@@ -1,4 +1,5 @@
 import { useConfigStore } from '../store/configStore'
+import { cleanMnemonic } from '../utils/text'
 
 interface LLMMessage {
   role: 'system' | 'user' | 'assistant'
@@ -90,31 +91,52 @@ class LLMService {
   public async translate(texts: string[]): Promise<string[]> {
     const systemPrompt = `你是一个专业的高中英语翻译助手。你的任务是将英语文章翻译成中文。
 翻译要求：
-1. 翻译要准确、通顺，符合中文表达习惯
-2. 对于长难句，要拆分翻译，保持语义完整
-3. 对于专有名词，保留英文并在括号内标注中文
-4. 返回JSON数组格式，每个元素对应一段的翻译
-5. 只返回JSON数组，不要其他任何内容`
+1. 翻译要准确、通顺，符合中文表达习惯。
+2. 对于长难句，要拆分翻译，保持语义完整。
+3. 对于专有名词，保留英文并在括号内标注中文。
+4. **关键要求**：返回一个JSON数组格式，数组中的每个元素必须严格对应输入数组中的每一段。
+5. **严禁合并或跳过段落**：即使某一段只是标题、短句、单个单词或字母（如段落编号A, B, C），也必须翻译并占据数组中的对应位置。
+6. **长度校验**：输出数组的长度必须【完全等于】输入数组的长度（当前输入长度：${texts.length}）。
+7. 只返回JSON数组，不要其他任何内容。`
 
-    const userPrompt = JSON.stringify(texts)
+    // 为了防止LLM混淆，我们在发送时可以给每段加上临时编号，但要求它返回纯翻译数组
+    const userPrompt = `待翻译数组（共${texts.length}项）：\n${JSON.stringify(texts)}`
+    
     const result = await this.callAPI([
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
     ])
 
     try {
-      const parsed = JSON.parse(result)
-      if (Array.isArray(parsed)) return parsed.map(String)
-    } catch {
-      const jsonMatch = result.match(/\[[\s\S]*\]/)
-      if (jsonMatch) {
-        try {
-          const parsed = JSON.parse(jsonMatch[0])
-          if (Array.isArray(parsed)) return parsed.map(String)
-        } catch { /* ignore */ }
+      let parsed: any = null
+      // 尝试直接解析
+      try {
+        parsed = JSON.parse(result)
+      } catch {
+        // 尝试正则提取数组
+        const jsonMatch = result.match(/\[[\s\S]*\]/)
+        if (jsonMatch) {
+          parsed = JSON.parse(jsonMatch[0])
+        }
       }
+
+      if (Array.isArray(parsed)) {
+        if (parsed.length !== texts.length) {
+          console.warn(`[LLM] 翻译结果长度不匹配: 输入 ${texts.length}, 输出 ${parsed.length}`)
+          // 如果LLM返回的结果少了，我们用空字符串补齐，防止后续逻辑错位
+          if (parsed.length < texts.length) {
+            const padding = new Array(texts.length - parsed.length).fill('')
+            return [...parsed, ...padding].map(String)
+          }
+          // 如果多了，截断
+          return parsed.slice(0, texts.length).map(String)
+        }
+        return parsed.map(String)
+      }
+    } catch (err) {
+      console.error('[LLM] 翻译解析失败:', err, result)
     }
-    throw new Error('翻译结果解析失败')
+    throw new Error('翻译结果解析失败，请重试')
   }
 
   /**
@@ -253,14 +275,55 @@ ${translation ? `中文翻译: ${translation}` : ''}`
 1. 综合使用多种记忆法，如：谐音记忆、词根词缀分析、联想记忆、小故事顺口溜等。
 2. 语言要幽默风趣，通俗易懂，特别适合记单词困难的学生。
 3. 结构清晰，分点说明。
-4. 直接返回助记内容的文本（支持Markdown格式），不要返回JSON。`
+4. **重要要求**：直接返回纯文本格式，不要使用 Markdown 语法（如不要使用 #, *, ** 等符号）。
+5. 每一行内容要简洁明了。`
 
     const userPrompt = `请为单词 "${word}" 生成助记内容。`
 
-    return await this.callAPI([
+    const result = await this.callAPI([
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
     ], { timeoutMs: 20000 })
+
+    return cleanMnemonic(result)
+  }
+
+  /**
+   * 扫描词组
+   */
+  public async scanPhrases(text: string, translation?: string): Promise<any[]> {
+    const systemPrompt = `你是一个高中英语词汇专家。分析给定的英语段落，找出其中的动词短语、介词短语、固定搭配等。
+
+要求：
+1. 识别段落中的常见短语和固定搭配（如 "look forward to", "in spite of", "take advantage of" 等）。
+2. 优先识别高中英语大纲内的核心短语。
+3. 返回JSON数组格式，每项：
+   {phrase: "短语文本", meaning: "中文释义", type: "短语类型(动词短语/介词短语/固定搭配/形容词短语)"}
+4. 如果没有发现词组，返回空数组 []
+5. 只返回JSON数组，不要其他内容。`
+
+    const userContent = translation
+      ? `英语段落：\n${text}\n\n中文译文（参考）：\n${translation}`
+      : `英语段落：\n${text}`
+
+    const result = await this.callAPI([
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userContent },
+    ])
+
+    try {
+      const parsed = JSON.parse(result)
+      if (Array.isArray(parsed)) return parsed
+    } catch {
+      const jsonMatch = result.match(/\[[\s\S]*\]/)
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[0])
+          if (Array.isArray(parsed)) return parsed
+        } catch { /* ignore */ }
+      }
+    }
+    return []
   }
 }
 

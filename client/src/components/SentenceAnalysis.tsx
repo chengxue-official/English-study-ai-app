@@ -4,21 +4,21 @@ import { useCollectionStore } from '../store/collectionStore'
 
 // 从句类型颜色映射
 const CLAUSE_TYPE_COLORS: Record<string, string> = {
-  '定语从句': 'bg-purple-50 text-purple-700 border-purple-200',
-  '状语从句': 'bg-green-50 text-green-700 border-green-200',
-  '名词性从句': 'bg-blue-50 text-blue-700 border-blue-200',
-  '主语从句': 'bg-blue-50 text-blue-700 border-blue-200',
-  '宾语从句': 'bg-cyan-50 text-cyan-700 border-cyan-200',
-  '表语从句': 'bg-indigo-50 text-indigo-700 border-indigo-200',
-  '同位语从句': 'bg-teal-50 text-teal-700 border-teal-200',
+  '定语从句': 'bg-purple-50 text-purple-700 border-purple-100 shadow-sm',
+  '状语从句': 'bg-emerald-50 text-emerald-700 border-emerald-100 shadow-sm',
+  '名词性从句': 'bg-blue-50 text-blue-700 border-blue-100 shadow-sm',
+  '主语从句': 'bg-blue-50 text-blue-700 border-blue-100 shadow-sm',
+  '宾语从句': 'bg-cyan-50 text-cyan-700 border-cyan-100 shadow-sm',
+  '表语从句': 'bg-indigo-50 text-indigo-700 border-indigo-100 shadow-sm',
+  '同位语从句': 'bg-teal-50 text-teal-700 border-teal-100 shadow-sm',
 }
 
 // 修饰类型颜色映射
 const MODIFIER_TYPE_COLORS: Record<string, string> = {
-  '定语': 'bg-pink-50 text-pink-700 border-pink-200',
-  '状语': 'bg-orange-50 text-orange-700 border-orange-200',
-  '插入语': 'bg-gray-50 text-gray-600 border-gray-200',
-  '同位语': 'bg-teal-50 text-teal-700 border-teal-200',
+  '定语': 'bg-pink-50 text-pink-700 border-pink-100',
+  '状语': 'bg-orange-50 text-orange-700 border-orange-100',
+  '插入语': 'bg-slate-50 text-slate-600 border-slate-100',
+  '同位语': 'bg-teal-50 text-teal-700 border-teal-100',
 }
 
 // 结构层次类型图标
@@ -35,22 +35,27 @@ export default function SentenceAnalysis() {
   if (!detailSentence && !detailLoading && !detailError) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       {/* 遮罩 */}
-      <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={clearDetail} />
+      <div className="absolute inset-0 bg-black/20 backdrop-blur-[2px]" onClick={clearDetail} />
 
       {/* 弹窗 */}
-      <div className="relative w-[calc(100%-2rem)] md:w-[560px] max-h-[85vh] overflow-y-auto bg-white rounded-2xl shadow-2xl">
+      <div className="relative w-full max-w-2xl max-h-[85vh] overflow-y-auto bg-white/95 backdrop-blur-md rounded-[2rem] shadow-2xl border border-white/20">
         {detailLoading ? (
-          <div className="p-8 text-center">
-            <div className="inline-block w-6 h-6 border-2 border-amber-600 border-t-transparent rounded-full animate-spin" />
-            <p className="mt-3 text-sm text-gray-500">AI正在分析长难句...</p>
-            <p className="mt-1 text-xs text-gray-400">提取主干、标注从句、识别修饰成分</p>
+          <div className="p-12 text-center">
+            <div className="inline-block w-8 h-8 border-3 border-amber-500 border-t-transparent rounded-full animate-spin" />
+            <p className="mt-4 text-sm font-bold text-gray-600">AI 正在深度解析长难句...</p>
+            <p className="mt-2 text-xs text-gray-400">提取主干、标注从句、识别修饰成分</p>
           </div>
         ) : detailError ? (
-          <div className="p-6 text-center">
-            <p className="text-sm text-red-600">{detailError}</p>
-            <button onClick={clearDetail} className="mt-3 text-sm text-gray-500 hover:text-gray-700">关闭</button>
+          <div className="p-8 text-center">
+            <div className="w-12 h-12 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4">
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <p className="text-sm font-medium text-red-600">{detailError}</p>
+            <button onClick={clearDetail} className="mt-4 px-6 py-2 bg-gray-100 text-gray-600 rounded-xl hover:bg-gray-200 transition-colors">关闭</button>
           </div>
         ) : currentDetail ? (
           <DetailContent
@@ -145,26 +150,36 @@ function DetailContent({
     : []
 
   return (
-    <div className="p-5">
+    <div className="p-6">
       {/* 头部 */}
-      <div className="flex items-start justify-between mb-4">
-        <div className="flex-1">
-          <h3 className="text-base font-bold text-gray-900 mb-1">长难句分析</h3>
-          {detail.cached && (
-            <span className="text-[10px] text-green-600 bg-green-50 px-1.5 py-0.5 rounded">本地缓存</span>
-          )}
+      <div className="flex items-start justify-between mb-6">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 bg-amber-50 rounded-2xl border border-amber-100">
+            <span className="text-xl">🧠</span>
+          </div>
+          <div>
+            <h3 className="text-lg font-black text-gray-900 tracking-tight">长难句深度分析</h3>
+            <div className="flex items-center gap-2 mt-1">
+              {detail.cached && (
+                <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-100">本地缓存</span>
+              )}
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">AI Powered</span>
+            </div>
+          </div>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-2">
           <button
             onClick={() => analyzeDetail(sentence, true)}
             disabled={detailLoading}
-            className="text-xs text-amber-600 hover:text-amber-800 hover:bg-amber-50 px-2 py-1 rounded transition-colors disabled:opacity-50"
-            title="重新调用AI分析，覆盖旧结果"
+            className="p-2 text-amber-600 hover:bg-amber-50 rounded-2xl transition-all disabled:opacity-50"
+            title="重新生成"
           >
-            重新生成
-          </button>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors ml-2">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
+          <button onClick={onClose} className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-2xl transition-all">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
@@ -172,31 +187,31 @@ function DetailContent({
       </div>
 
       {/* 原句 */}
-      <div className="mb-4 p-3 bg-amber-50 rounded-lg border border-amber-100">
-        <p className="text-sm text-gray-800 leading-relaxed">{sentence}</p>
+      <div className="mb-6 p-5 bg-gradient-to-br from-amber-50/50 to-orange-50/50 rounded-3xl border border-amber-100/50 shadow-sm">
+        <p className="text-base font-medium text-gray-800 leading-relaxed italic">"{sentence}"</p>
       </div>
 
       {/* 句子主干 */}
       {(safeTrunk.subject || safeTrunk.predicate || safeTrunk.object) && (
-        <div className="mb-4">
-          <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">句子主干</h4>
-          <div className="flex flex-wrap gap-2">
+        <div className="mb-8">
+          <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] mb-4">Sentence Trunk</h4>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {safeTrunk.subject && (
-              <div className="px-3 py-1.5 bg-red-50 border border-red-200 rounded-lg">
-                <span className="text-[10px] text-red-400 block">主语</span>
-                <span className="text-sm font-medium text-red-700">{safeTrunk.subject}</span>
+              <div className="p-4 bg-rose-50/50 border border-rose-100 rounded-2xl shadow-sm">
+                <span className="text-[10px] font-black text-rose-400 uppercase tracking-wider block mb-1">Subject</span>
+                <span className="text-sm font-black text-rose-900">{safeTrunk.subject}</span>
               </div>
             )}
             {safeTrunk.predicate && (
-              <div className="px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-lg">
-                <span className="text-[10px] text-blue-400 block">谓语</span>
-                <span className="text-sm font-medium text-blue-700">{safeTrunk.predicate}</span>
+              <div className="p-4 bg-blue-50/50 border border-blue-100 rounded-2xl shadow-sm">
+                <span className="text-[10px] font-black text-blue-400 uppercase tracking-wider block mb-1">Predicate</span>
+                <span className="text-sm font-black text-blue-900">{safeTrunk.predicate}</span>
               </div>
             )}
             {safeTrunk.object && (
-              <div className="px-3 py-1.5 bg-green-50 border border-green-200 rounded-lg">
-                <span className="text-[10px] text-green-400 block">宾语/表语</span>
-                <span className="text-sm font-medium text-green-700">{safeTrunk.object}</span>
+              <div className="p-4 bg-emerald-50/50 border border-emerald-100 rounded-2xl shadow-sm">
+                <span className="text-[10px] font-black text-emerald-400 uppercase tracking-wider block mb-1">Object/Comp</span>
+                <span className="text-sm font-black text-emerald-900">{safeTrunk.object}</span>
               </div>
             )}
           </div>
@@ -205,24 +220,26 @@ function DetailContent({
 
       {/* 从句标注 */}
       {safeClauses.length > 0 && (
-        <div className="mb-4">
-          <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">从句分析</h4>
-          <div className="space-y-2">
+        <div className="mb-8">
+          <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] mb-4">Clause Analysis</h4>
+          <div className="space-y-3">
             {safeClauses.map((clause, i) => {
-              const colorClass = CLAUSE_TYPE_COLORS[clause.type] || 'bg-gray-50 text-gray-700 border-gray-200'
+              const colorClass = CLAUSE_TYPE_COLORS[clause.type] || 'bg-gray-50 text-gray-700 border-gray-100'
               return (
-                <div key={i} className={`p-2.5 rounded-lg border ${colorClass}`}>
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-xs font-bold">{clause.type}</span>
+                <div key={i} className={`p-4 rounded-2xl border ${colorClass}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-black uppercase tracking-wider">{clause.type}</span>
                     {clause.marker && (
-                      <span className="text-[10px] px-1.5 py-0.5 bg-white/60 rounded">
-                        引导词: <span className="font-mono font-bold">{clause.marker}</span>
+                      <span className="text-[10px] font-bold px-2 py-0.5 bg-white/60 rounded-lg border border-black/5">
+                        引导词: <span className="font-mono font-black">{clause.marker}</span>
                       </span>
                     )}
                   </div>
-                  <p className="text-sm">{clause.content}</p>
+                  <p className="text-sm font-medium leading-relaxed">{clause.content}</p>
                   {clause.role && (
-                    <p className="text-[11px] mt-1 opacity-70">{clause.role}</p>
+                    <div className="mt-2 pt-2 border-t border-black/5">
+                      <p className="text-[11px] font-bold opacity-60 italic">{clause.role}</p>
+                    </div>
                   )}
                 </div>
               )
@@ -233,30 +250,30 @@ function DetailContent({
 
       {/* 修饰成分（可折叠） */}
       {safeModifiers.length > 0 && (
-        <div className="mb-4">
-          <div className="flex items-center justify-between mb-2">
-            <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider">修饰成分</h4>
+        <div className="mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em]">Modifiers</h4>
             <button
               onClick={() => setModifiersCollapsed(!modifiersCollapsed)}
-              className="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1"
+              className="text-[10px] font-black text-gray-400 hover:text-gray-600 flex items-center gap-1 uppercase tracking-wider"
             >
-              {modifiersCollapsed ? '展开' : '折叠'}
+              {modifiersCollapsed ? 'Expand' : 'Collapse'}
               <svg className={`w-3 h-3 transition-transform ${modifiersCollapsed ? '' : 'rotate-180'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
               </svg>
             </button>
           </div>
           {!modifiersCollapsed && (
-            <div className="space-y-1.5">
+            <div className="grid grid-cols-1 gap-2">
               {safeModifiers.map((mod, i) => {
-                const colorClass = MODIFIER_TYPE_COLORS[mod.type] || 'bg-gray-50 text-gray-600 border-gray-200'
+                const colorClass = MODIFIER_TYPE_COLORS[mod.type] || 'bg-gray-50 text-gray-600 border-gray-100'
                 return (
-                  <div key={i} className={`flex items-start gap-2 p-2 rounded-lg border ${colorClass}`}>
-                    <span className="text-xs font-bold whitespace-nowrap">{mod.type}</span>
+                  <div key={i} className={`flex items-start gap-3 p-3 rounded-2xl border ${colorClass}`}>
+                    <span className="text-[10px] font-black uppercase tracking-wider mt-0.5">{mod.type}</span>
                     <div className="flex-1">
-                      <span className="text-sm">{mod.content}</span>
+                      <span className="text-sm font-medium">{mod.content}</span>
                       {mod.target && (
-                        <span className="text-[11px] ml-1 opacity-60">→ {mod.target}</span>
+                        <span className="text-[11px] font-bold ml-2 opacity-40">→ {mod.target}</span>
                       )}
                     </div>
                   </div>
@@ -269,20 +286,20 @@ function DetailContent({
 
       {/* 结构层次 */}
       {safeStructure.length > 0 && (
-        <div className="mb-4">
-          <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">结构层次</h4>
-          <div className="bg-gray-50 rounded-lg p-3 font-mono text-sm space-y-1">
+        <div className="mb-8">
+          <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] mb-4">Hierarchical Structure</h4>
+          <div className="bg-slate-900 rounded-[2rem] p-6 font-mono text-sm space-y-2 shadow-inner">
             {safeStructure.map((item, i) => {
               const icon = STRUCTURE_ICONS[item.type] || '📌'
               return (
-                <div key={i} style={{ paddingLeft: `${item.level * 20}px` }}>
-                  <span className="mr-1">{icon}</span>
-                  <span className={`text-xs px-1 py-0.5 rounded ${
-                    item.type === '主干' ? 'bg-red-100 text-red-700' :
-                    item.type === '从句' ? 'bg-purple-100 text-purple-700' :
-                    'bg-pink-100 text-pink-700'
+                <div key={i} style={{ paddingLeft: `${item.level * 24}px` }} className="flex items-center gap-3">
+                  <span className="text-base">{icon}</span>
+                  <span className={`text-[9px] font-black px-2 py-0.5 rounded-lg uppercase tracking-wider ${
+                    item.type === '主干' ? 'bg-rose-500 text-white' :
+                    item.type === '从句' ? 'bg-indigo-500 text-white' :
+                    'bg-pink-500 text-white'
                   }`}>{item.type}</span>
-                  <span className="ml-2 text-gray-700">{item.text}</span>
+                  <span className="text-slate-300 font-medium">{item.text}</span>
                 </div>
               )
             })}
@@ -292,13 +309,14 @@ function DetailContent({
 
       {/* 分析提示 */}
       {safeTips.length > 0 && (
-        <div className="pt-3 border-t border-gray-100">
-          <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">学习提示</h4>
-          <div className="space-y-1">
+        <div className="pt-6 border-t border-gray-100 mb-8">
+          <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] mb-4">Learning Tips</h4>
+          <div className="space-y-3">
             {safeTips.map((tip, i) => (
-              <p key={i} className="text-sm text-gray-600 leading-relaxed">
-                <span className="text-amber-500 mr-1">💡</span>{tip}
-              </p>
+              <div key={i} className="flex items-start gap-3 p-4 bg-amber-50/30 rounded-2xl border border-amber-100/50">
+                <span className="text-lg mt-0.5">💡</span>
+                <p className="text-sm font-medium text-amber-900/80 leading-relaxed">{tip}</p>
+              </div>
             ))}
           </div>
         </div>
@@ -306,9 +324,9 @@ function DetailContent({
 
       {/* 词组搭配 */}
       {safePhrases.length > 0 && (
-        <div className="pt-3 border-t border-gray-100">
-          <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">词组搭配</h4>
-          <div className="flex flex-wrap gap-2">
+        <div className="pt-6 border-t border-gray-100 mb-8">
+          <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] mb-4">Key Phrases</h4>
+          <div className="flex flex-wrap gap-3">
             {safePhrases.map((p, i) => (
               <PhraseCard key={i} phrase={p.phrase} meaning={p.meaning} type={p.type} sentence={sentence} />
             ))}
@@ -318,17 +336,17 @@ function DetailContent({
 
       {/* 固定句型 */}
       {safePatterns.length > 0 && (
-        <div className="pt-3 border-t border-gray-100">
-          <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">固定句型</h4>
-          <div className="space-y-2">
+        <div className="pt-6 border-t border-gray-100 mb-8">
+          <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] mb-4">Sentence Patterns</h4>
+          <div className="grid grid-cols-1 gap-3">
             {safePatterns.map((p, i) => (
-              <div key={i} className="p-2.5 bg-indigo-50 rounded-lg border border-indigo-100">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs font-bold text-indigo-700">{p.name}</span>
-                  <code className="text-[11px] px-1.5 py-0.5 bg-white rounded font-mono text-indigo-600">{p.pattern}</code>
+              <div key={i} className="p-4 bg-indigo-50/50 rounded-2xl border border-indigo-100/50">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-black text-indigo-900 uppercase tracking-wider">{p.name}</span>
+                  <code className="text-[10px] px-2 py-1 bg-white rounded-lg font-mono font-black text-indigo-600 border border-indigo-100">{p.pattern}</code>
                 </div>
                 {p.example && (
-                  <p className="text-xs text-indigo-600/70">{p.example}</p>
+                  <p className="text-xs font-medium text-indigo-700/60 italic">"{p.example}"</p>
                 )}
               </div>
             ))}
@@ -338,20 +356,20 @@ function DetailContent({
 
       {/* 考点提示 */}
       {safeExamPoints.length > 0 && (
-        <div className="pt-3 border-t border-gray-100">
-          <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">考点提示</h4>
-          <div className="space-y-2">
+        <div className="pt-6 border-t border-gray-100 mb-8">
+          <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] mb-4">Exam Points</h4>
+          <div className="grid grid-cols-1 gap-3">
             {safeExamPoints.map((e, i) => (
-              <div key={i} className="flex items-start gap-2 p-2.5 bg-red-50 rounded-lg border border-red-100">
-                <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold shrink-0 ${
-                  e.importance === '高' ? 'bg-red-200 text-red-800' :
-                  e.importance === '中' ? 'bg-amber-200 text-amber-800' :
-                  'bg-gray-200 text-gray-700'
+              <div key={i} className="flex items-start gap-4 p-4 bg-rose-50/30 rounded-2xl border border-rose-100/50">
+                <span className={`text-[10px] px-2 py-1 rounded-lg font-black uppercase tracking-wider shrink-0 ${
+                  e.importance === '高' ? 'bg-rose-500 text-white' :
+                  e.importance === '中' ? 'bg-amber-500 text-white' :
+                  'bg-slate-400 text-white'
                 }`}>{e.importance}</span>
                 <div>
-                  <span className="text-sm font-medium text-red-700">{e.point}</span>
+                  <span className="text-sm font-black text-rose-900">{e.point}</span>
                   {e.description && (
-                    <p className="text-xs text-red-600/70 mt-0.5">{e.description}</p>
+                    <p className="text-xs font-medium text-rose-700/60 mt-1 leading-relaxed">{e.description}</p>
                   )}
                 </div>
               </div>
@@ -361,7 +379,7 @@ function DetailContent({
       )}
 
       {/* 收藏长难句 */}
-      <div className="pt-3 border-t border-gray-100">
+      <div className="pt-6 border-t border-gray-100">
         <SentenceCollectButton sentence={sentence} detail={detail} />
       </div>
     </div>
@@ -378,21 +396,21 @@ const PHRASE_TYPE_COLORS: Record<string, string> = {
 
 /** 词组搭配卡片 - 可收藏 */
 function PhraseCard({ phrase, meaning, type, sentence }: { phrase: string; meaning: string; type: string; sentence: string }) {
-  const { checkCollected, addCollection, removeCollection, items } = useCollectionStore()
-  const [isCollected, setIsCollected] = useState(false)
+  const { checkCollected, addCollection, removeCollection, collectedMap } = useCollectionStore()
+  
+  const phraseKey = `phrase:${phrase.toLowerCase()}`
+  const isCollected = !!collectedMap.get(phraseKey)
 
   useEffect(() => {
-    checkCollected('phrase', phrase.toLowerCase()).then(setIsCollected)
+    checkCollected('phrase', phrase.toLowerCase())
   }, [checkCollected, phrase])
 
   const handleToggle = async (e: React.MouseEvent) => {
     e.stopPropagation()
-    if (isCollected) {
-      const item = items.find(i => i.type === 'phrase' && i.content === phrase.toLowerCase())
-      if (item) {
-        await removeCollection(item.id)
-        setIsCollected(false)
-      }
+    const existingId = collectedMap.get(phraseKey)
+
+    if (existingId) {
+      await removeCollection(existingId)
     } else {
       await addCollection({
         type: 'phrase',
@@ -401,7 +419,6 @@ function PhraseCard({ phrase, meaning, type, sentence }: { phrase: string; meani
         sourceSentence: sentence,
         tags: ['长难句分析'],
       })
-      setIsCollected(true)
     }
   }
 
@@ -431,20 +448,20 @@ function PhraseCard({ phrase, meaning, type, sentence }: { phrase: string; meani
 
 /** 长难句收藏按钮 */
 function SentenceCollectButton({ sentence, detail }: { sentence: string; detail: SentenceDetail }) {
-  const { checkCollected, addCollection, removeCollection, items } = useCollectionStore()
-  const [isCollected, setIsCollected] = useState(false)
+  const { checkCollected, addCollection, removeCollection, collectedMap } = useCollectionStore()
+  
+  const sentenceKey = `sentence:${sentence}`
+  const isCollected = !!collectedMap.get(sentenceKey)
 
   useEffect(() => {
-    checkCollected('sentence', sentence).then(setIsCollected)
+    checkCollected('sentence', sentence)
   }, [checkCollected, sentence])
 
   const handleToggle = async () => {
-    if (isCollected) {
-      const item = items.find(i => i.type === 'sentence' && i.content === sentence)
-      if (item) {
-        await removeCollection(item.id)
-        setIsCollected(false)
-      }
+    const existingId = collectedMap.get(sentenceKey)
+
+    if (existingId) {
+      await removeCollection(existingId)
     } else {
       // 构建收藏内容摘要：主干+从句类型
       const trunkStr = [detail.trunk.subject, detail.trunk.predicate, detail.trunk.object].filter(Boolean).join(' → ')
@@ -458,7 +475,6 @@ function SentenceCollectButton({ sentence, detail }: { sentence: string; detail:
         sourceSentence: sentence,
         tags: ['长难句'],
       })
-      setIsCollected(true)
     }
   }
 

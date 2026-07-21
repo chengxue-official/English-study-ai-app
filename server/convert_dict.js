@@ -9,7 +9,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const CSV_URL = 'https://raw.githubusercontent.com/skywind3000/ECDICT/master/ecdict.csv';
-const DB_PATH = path.resolve(__dirname, '../client/public/stardict_lite.db');
+const DB_PATH = path.resolve(__dirname, '../client/public/stardict.db');
+const SERVER_DB_PATH = path.resolve(__dirname, '../server/data/stardict.db');
 
 // 核心词汇标签：zk(中考), gk(高考), cet4(四级), cet6(六级), ky(考研)
 const CORE_TAGS = ['zk', 'gk', 'cet4', 'cet6', 'ky'];
@@ -182,6 +183,18 @@ async function main() {
   const stats = fs.statSync(DB_PATH);
   console.log(`Database size: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
   db.close();
+11
+  // 同步到服务端目录
+  try {
+    const serverDataDir = path.dirname(SERVER_DB_PATH);
+    if (!fs.existsSync(serverDataDir)) {
+      fs.mkdirSync(serverDataDir, { recursive: true });
+    }
+    fs.copyFileSync(DB_PATH, SERVER_DB_PATH);
+    console.log('Synced to server data directory:', SERVER_DB_PATH);
+  } catch (err) {
+    console.error('Failed to sync to server data directory:', err.message);
+  }
 }
 
 main().catch(console.error);

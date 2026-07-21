@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { useUpdateStore } from '../store/updateStore'
 
 export default function UpdateNotification() {
-  const { hasUpdate, latestVersion, checkUpdate, applyUpdate } = useUpdateStore()
+  const { hasUpdate, latestVersion, checkUpdate, applyUpdate, isDownloading, downloadProgress, updateError } = useUpdateStore()
 
   // 自动检查更新（可选，比如每小时检查一次）
   useEffect(() => {
@@ -23,26 +23,56 @@ export default function UpdateNotification() {
           <div className="flex-1">
             <h3 className="text-sm font-bold text-gray-900">发现新版本 {latestVersion.version}</h3>
             <p className="text-xs text-gray-500 mt-1 line-clamp-2">
-              {latestVersion.description}
+              {latestVersion.notes}
             </p>
+            
+            {updateError && (
+              <p className="text-xs text-red-500 mt-2 font-medium">{updateError}</p>
+            )}
+
             <div className="mt-3 flex items-center gap-2">
               <button
                 onClick={applyUpdate}
-                className="px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 transition-colors"
+                disabled={isDownloading}
+                className="px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
-                立即更新
+                {isDownloading ? (
+                  <>
+                    <svg className="animate-spin h-3 w-3 text-white" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    下载中 {downloadProgress}%
+                  </>
+                ) : (
+                  '立即更新'
+                )}
               </button>
-              <button
-                onClick={() => useUpdateStore.setState({ hasUpdate: false })}
-                className="px-3 py-1.5 bg-gray-100 text-gray-600 text-xs font-medium rounded-lg hover:bg-gray-200 transition-colors"
-              >
-                稍后再说
-              </button>
+              {!isDownloading && (
+                <button
+                  onClick={() => useUpdateStore.setState({ hasUpdate: false })}
+                  className="px-3 py-1.5 bg-gray-100 text-gray-600 text-xs font-medium rounded-lg hover:bg-gray-200 transition-colors"
+                >
+                  稍后再说
+                </button>
+              )}
             </div>
           </div>
         </div>
       </div>
-      <div className="h-1 bg-blue-600 w-full animate-progress"></div>
+      
+      {/* 进度条 */}
+      {isDownloading ? (
+        <div className="h-1 bg-gray-100 w-full">
+          <div 
+            className="h-full bg-blue-600 transition-all duration-300" 
+            style={{ width: `${downloadProgress}%` }}
+          />
+        </div>
+      ) : (
+        <div className="h-1 bg-blue-600 w-full animate-progress"></div>
+      )}
+      
       <style>{`
         @keyframes progress {
           from { width: 0%; }

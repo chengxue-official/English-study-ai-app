@@ -1,3 +1,5 @@
+import { XxApiService } from '../services/xxapi'
+
 // 全局缓存：预加载的语音列表 + 上一个Audio对象（用于停止重复播放）
 let cachedVoices: SpeechSynthesisVoice[] = []
 let lastAudio: HTMLAudioElement | null = null
@@ -20,9 +22,9 @@ export function stopSpeaking() {
 
 /**
  * 朗读单词 - 移动端兼容版
- * 优先使用提供的 URL 或在线真人发音（有道词典API），失败回退Web Speech API TTS
+ * 优先使用提供的 URL 或在线真人发音，失败回退Web Speech API TTS
  */
-export function speakWord(word: string, url?: string) {
+export async function speakWord(word: string, url?: string) {
   console.log('[发音] 开始:', word, '| URL:', url, '| speechSynthesis可用:', !!window.speechSynthesis)
 
   // 停止上一次播放
@@ -47,24 +49,42 @@ export function speakWord(word: string, url?: string) {
     }
   }
 
-  speakDefaultOnline(word)
+  await speakDefaultOnline(word)
 }
 
 /** 默认在线发音逻辑 */
-function speakDefaultOnline(word: string) {
+async function speakDefaultOnline(word: string) {
   try {
-    const audioUrl = `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(word)}&type=2`
-    const audio = new Audio(audioUrl)
+    // 1. 尝试从 XxApi 获取发音 URL (中立接口)
+    const onlineResult = await XxApiService.fetchWord(word)
+    const speakUrl = onlineResult?.ukspeech || onlineResult?.usspeech || onlineResult?.speakUrl
+    
+    if (speakUrl) {
+      const audio = new Audio(speakUrl)
+      lastAudio = audio
+      audio.play().then(() => {
+        console.log('[发音] 在线真人发音成功 (XxApi)')
+      }).catch((e) => {
+        console.log('[发音] 在线发音失败:', e?.message || e, '→ 回退TTS')
+        lastAudio = null
+        speakWithTTS(word)
+      })
+      return
+    }
+
+    // 2. 兜底：使用公共 TTS 接口 (不带品牌标识)
+    const fallbackUrl = `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(word)}&type=2`
+    const audio = new Audio(fallbackUrl)
     lastAudio = audio
     audio.play().then(() => {
-      console.log('[发音] 默认在线真人发音成功')
+      console.log('[发音] 兜底在线发音成功')
     }).catch((e) => {
-      console.log('[发音] 默认在线发音失败:', e?.message || e, '→ 回退TTS')
+      console.log('[发音] 兜底在线发音失败:', e?.message || e, '→ 回退TTS')
       lastAudio = null
       speakWithTTS(word)
     })
   } catch (e) {
-    console.log('[发音] 默认在线 Audio 创建异常:', e, '→ 回退TTS')
+    console.log('[发音] 默认在线发音异常:', e, '→ 回退TTS')
     speakWithTTS(word)
   }
 }

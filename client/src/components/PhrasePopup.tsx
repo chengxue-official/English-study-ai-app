@@ -12,7 +12,7 @@ export default function PhrasePopup() {
     if (selectedPhrase) {
       setVisible(true)
       // 检查是否已收藏
-      checkCollected('phrase', selectedPhrase.phrase.toLowerCase()).then(setIsCollected)
+      checkCollected('phrase', selectedPhrase.phrase.toLowerCase()).then(id => setIsCollected(id !== null))
     } else {
       setVisible(false)
     }
@@ -21,7 +21,7 @@ export default function PhrasePopup() {
   // 收藏状态可能随items变化
   useEffect(() => {
     if (selectedPhrase) {
-      checkCollected('phrase', selectedPhrase.phrase.toLowerCase()).then(setIsCollected)
+      checkCollected('phrase', selectedPhrase.phrase.toLowerCase()).then(id => setIsCollected(id !== null))
     }
   }, [items, selectedPhrase, checkCollected])
 
@@ -50,29 +50,32 @@ export default function PhrasePopup() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
       onClick={clearSelection}
     >
-      <div className="fixed inset-0 bg-black/20" />
+      <div className="fixed inset-0 bg-black/20 backdrop-blur-[2px]" />
       <div
-        className="relative bg-white rounded-2xl shadow-xl border border-gray-200 max-w-sm w-full mx-4 p-5"
+        className="relative bg-white/95 backdrop-blur-md rounded-[2rem] shadow-2xl border border-white/20 max-w-sm w-full p-6 overflow-hidden"
         onClick={e => e.stopPropagation()}
       >
         {/* 头部 */}
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <span className="text-xs px-2 py-0.5 bg-green-50 text-green-700 rounded font-medium">
-              🔗 词组
-            </span>
-            <h3 className="text-base font-bold text-gray-900">{selectedPhrase.phrase}</h3>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-emerald-50 rounded-xl border border-emerald-100">
+              <span className="text-lg">🔗</span>
+            </div>
+            <div>
+              <span className="text-[10px] font-black text-emerald-600 uppercase tracking-wider block">Phrase</span>
+              <h3 className="text-lg font-black text-gray-900 tracking-tight">{selectedPhrase.phrase}</h3>
+            </div>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-2">
             {/* 收藏按钮 */}
             <button
               onClick={handleToggleCollect}
-              className={`p-1.5 rounded-lg transition-colors ${
+              className={`p-2.5 rounded-2xl transition-all ${
                 isCollected
-                  ? 'text-amber-500 hover:bg-amber-50'
+                  ? 'text-amber-500 bg-amber-50 shadow-inner'
                   : 'text-gray-300 hover:bg-gray-100 hover:text-amber-400'
               }`}
               title={isCollected ? '取消收藏' : '收藏词组'}
@@ -84,9 +87,9 @@ export default function PhrasePopup() {
             {/* 关闭按钮 */}
             <button
               onClick={clearSelection}
-              className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              className="p-2.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-2xl transition-all"
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
@@ -94,16 +97,16 @@ export default function PhrasePopup() {
         </div>
 
         {/* 释义 */}
-        <div className="bg-gray-50 rounded-xl p-3 mb-3">
-          <p className="text-sm text-gray-700">{selectedPhrase.translation}</p>
+        <div className="bg-gray-50/80 rounded-2xl p-4 mb-4 border border-gray-100">
+          <p className="text-base font-bold text-gray-800 leading-relaxed">{selectedPhrase.translation}</p>
         </div>
 
         {/* 组成词 */}
-        <div className="mb-3">
-          <p className="text-xs text-gray-400 mb-1">组成词</p>
-          <div className="flex flex-wrap gap-1.5">
+        <div className="mb-4">
+          <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-wider mb-2">Components</h4>
+          <div className="flex flex-wrap gap-2">
             {selectedPhrase.words.map((w, i) => (
-              <span key={i} className="text-xs px-2 py-0.5 bg-blue-50 text-blue-700 rounded">
+              <span key={i} className="text-xs font-bold px-3 py-1.5 bg-blue-50 text-blue-600 rounded-xl border border-blue-100">
                 {w}
               </span>
             ))}
@@ -112,13 +115,16 @@ export default function PhrasePopup() {
 
         {/* 来源句子 */}
         {selectedSourceSentence && (
-          <div className="p-2.5 bg-amber-50/50 rounded-lg border border-amber-100">
-            <p className="text-xs text-gray-500 mb-1">
-              <span className="text-gray-400">来源：</span>{selectedSourceSentence}
+          <div className="p-4 bg-amber-50/50 rounded-2xl border border-amber-100/50">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[10px] font-black text-amber-400 uppercase tracking-wider">Context</span>
+            </div>
+            <p className="text-sm text-amber-900/80 italic leading-relaxed">
+              "{selectedSourceSentence}"
             </p>
             {selectedSourceTranslation && (
-              <p className="text-xs text-gray-500">
-                <span className="text-gray-400">译文：</span>{selectedSourceTranslation}
+              <p className="text-xs text-amber-700/60 mt-2 font-medium">
+                {selectedSourceTranslation}
               </p>
             )}
           </div>

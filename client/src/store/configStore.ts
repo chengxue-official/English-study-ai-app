@@ -29,10 +29,7 @@ interface ConfigState {
   availableModels: string[] // 从API动态获取的模型列表
   fetchingModels: boolean
   connectionStatus: ConnectionStatus
-  
-  // 有道词典 API 配置
-  youdaoAppKey: string
-  youdaoAppSecret: string
+  dictSource: 'auto' | 'local' | 'online' // 查词来源
 
   setApiKey: (key: string) => void
   setApiUrl: (url: string) => void
@@ -40,13 +37,12 @@ interface ConfigState {
   setProvider: (name: string) => void
   setAvailableModels: (models: string[]) => void
   setConnectionStatus: (status: Partial<ConnectionStatus>) => void
-  setYoudaoConfig: (appKey: string, appSecret: string) => void
+  setDictSource: (source: 'auto' | 'local' | 'online') => void
   fetchModels: () => Promise<boolean>
   loadFromStorage: () => void
   saveToStorage: () => void
   isConfigured: () => boolean
-  getConfig: () => { apiKey: string; apiUrl: string; model: string }
-  getYoudaoConfig: () => { appKey: string; appSecret: string }
+  getConfig: () => { apiKey: string; apiUrl: string; model: string; dictSource: 'auto' | 'local' | 'online' }
 }
 
 const STORAGE_KEY = 'english-exam-app-config'
@@ -63,8 +59,7 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     success: null,
     message: '',
   },
-  youdaoAppKey: '',
-  youdaoAppSecret: '',
+  dictSource: 'auto',
 
   setApiKey: (apiKey) => set({ apiKey }),
   setApiUrl: (apiUrl) => set({ apiUrl }),
@@ -87,7 +82,7 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     set((state) => ({
       connectionStatus: { ...state.connectionStatus, ...status },
     })),
-  setYoudaoConfig: (youdaoAppKey, youdaoAppSecret) => set({ youdaoAppKey, youdaoAppSecret }),
+  setDictSource: (dictSource) => set({ dictSource }),
 
   /**
    * 调用大模型 API 获取可用模型列表
@@ -197,8 +192,7 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
           apiUrl: data.apiUrl || API_PROVIDERS[0].url,
           model: data.model || '',
           providerName: data.providerName || API_PROVIDERS[0].name,
-          youdaoAppKey: data.youdaoAppKey || '',
-          youdaoAppSecret: data.youdaoAppSecret || '',
+          dictSource: data.dictSource || 'auto',
         })
       }
     } catch {
@@ -207,10 +201,10 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   },
 
   saveToStorage: () => {
-    const { apiKey, apiUrl, model, providerName, youdaoAppKey, youdaoAppSecret } = get()
+    const { apiKey, apiUrl, model, providerName, dictSource } = get()
     localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ apiKey, apiUrl, model, providerName, youdaoAppKey, youdaoAppSecret })
+      JSON.stringify({ apiKey, apiUrl, model, providerName, dictSource })
     )
   },
 
@@ -220,12 +214,8 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   },
 
   getConfig: () => {
-    const { apiKey, apiUrl, model } = get()
-    return { apiKey, apiUrl, model }
-  },
-
-  getYoudaoConfig: () => {
-    const { youdaoAppKey, youdaoAppSecret } = get()
-    return { appKey: youdaoAppKey, appSecret: youdaoAppSecret }
+    const { apiKey, apiUrl, model, dictSource } = get()
+    return { apiKey, apiUrl, model, dictSource }
   },
 }))
+

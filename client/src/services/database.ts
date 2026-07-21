@@ -18,6 +18,13 @@ export interface DictEntry {
   searchedForm?: string
   source?: string
   speakUrl?: string
+  ukphone?: string
+  usphone?: string
+  ukspeech?: string
+  usspeech?: string
+  sentences?: { en: string; zh: string }[]
+  synonyms?: { pos: string; tran: string; words: string[] }[]
+  phrases?: { en: string; zh: string }[]
 }
 
 class DatabaseService {
@@ -104,6 +111,20 @@ class DatabaseService {
         // 3. 尝试加载词典数据库 (stardict.db)
         await this.initDictDb()
 
+        if (this.dictDb) {
+          try {
+            const testStmt = this.dictDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='stardict'")
+            if (testStmt.step()) {
+              console.log('[DatabaseService] 词典数据库验证成功: 找到 stardict 表')
+            } else {
+              console.error('[DatabaseService] 词典数据库验证失败: 未找到 stardict 表')
+            }
+            testStmt.free()
+          } catch (e) {
+            console.error('[DatabaseService] 词典数据库验证出错:', e)
+          }
+        }
+
         console.log('[DatabaseService] 初始化完成')
       } catch (err: any) {
         console.error('[DatabaseService] 初始化失败:', err)
@@ -181,6 +202,17 @@ class DatabaseService {
         )
       `)
 
+      // 检查表状态
+      try {
+        const countStmt = this.cacheDb!.prepare('SELECT COUNT(*) as count FROM sentence_analysis')
+        if (countStmt.step()) {
+          console.log(`[DatabaseService] sentence_analysis 表初始化完成，已有 ${countStmt.getAsObject().count} 条记录`)
+        }
+        countStmt.free()
+      } catch (e) {
+        console.warn('[DatabaseService] 检查 sentence_analysis 表状态失败:', e)
+      }
+
       this.cacheDb!.run(`
         CREATE TABLE IF NOT EXISTS word_context_cache (
           cache_key TEXT PRIMARY KEY,
@@ -251,38 +283,41 @@ class DatabaseService {
         }
       }
 
-      // 如果没有缓存，尝试从 public 目录加载
-      const dictUrl = '/stardict.db'
-      console.log(`[DatabaseService] 尝试从网络/本地资源加载词典: ${dictUrl}`)
-      const res = await fetch(dictUrl)
-      
-      if (res.ok) {
-        const buffer = await res.arrayBuffer()
-        const data = new Uint8Array(buffer)
-        
-        if (this.isSqlite(data)) {
-          console.log(`[DatabaseService] 词典下载完成, 大小: ${data.length} bytes`)
-          this.dictDb = new this.SQL.Database(data)
-          // 异步保存到 localforage
-          localforage.setItem('stardict.db', data).catch(err => {
-            console.warn('[DatabaseService] 缓存 stardict.db 失败:', err)
-          })
-          console.log('[DatabaseService] 已从资源目录加载并缓存 stardict.db')
-        } else {
-          console.warn('[DatabaseService] 下载的文件不是有效的 SQLite 数据库 (可能是 SPA 路由返回的 index.html)')
-        }
-      } else {
-        console.warn(`[DatabaseService] 未找到 stardict.db: ${res.status} ${res.statusText}`)
-      }
+      console.log('[DatabaseService] 本地未发现词典缓存，等待用户手动下载或导入')
     } catch (err) {
       console.error('[DatabaseService] 加载 stardict.db 过程中发生错误:', err)
+      // 不抛出错误，允许应用在无词典状态下启动
     }
+  }
+
+  /**
+   * 从 Public 目录加载默认词典 (stardict.db)
+   */
+  public async loadDictFromPublic(): Promise<void> {
+    await this.init()
+    const dictUrl = '/stardict.db'
+    console.log(`[DatabaseService] 尝试从 Public 目录加载词典: ${dictUrl}`)
+    
+    const res = await fetch(dictUrl)
+    if (!res.ok) {
+      throw new Error(`未找到默认词典文件 (${res.status})`)
+    }
+
+    const buffer = await res.arrayBuffer()
+    const data = new Uint8Array(buffer)
+    
+    if (!this.isSqlite(data)) {
+      throw new Error('下载的文件不是有效的 SQLite 数据库格式')
+    }
+
+    await this.importDictDb(data)
   }
 
   /**
    * 手动导入词典数据库
    */
   public async importDictDb(data: Uint8Array): Promise<void> {
+    console.log(`[DatabaseService] 开始导入词典, 数据大小: ${data.length} bytes`)
     await this.init()
     if (!this.SQL) throw new Error('SQL.js 未初始化')
     
@@ -292,11 +327,32 @@ class DatabaseService {
     }
 
     if (this.dictDb) {
+      console.log('[DatabaseService] 关闭旧的词典数据库连接')
       this.dictDb.close()
     }
+
+    console.log('[DatabaseService] 正在创建新的 SQL.js 数据库实例...')
     this.dictDb = new this.SQL.Database(validData)
+    
+    console.log('[DatabaseService] 正在保存词典到本地存储 (localforage)...')
     await localforage.setItem('stardict.db', validData)
     console.log('[DatabaseService] 成功导入并缓存 stardict.db')
+  }
+
+  /**
+   * 获取当前词典文件大小 (bytes)
+   */
+  public async getDictSize(): Promise<number> {
+    try {
+      const rawCached = await localforage.getItem('stardict.db')
+      if (rawCached) {
+        const data = await this.ensureUint8Array(rawCached)
+        return data.length
+      }
+    } catch (e) {
+      console.error('[DatabaseService] 获取词典大小失败:', e)
+    }
+    return 0
   }
 
   /**
@@ -509,28 +565,49 @@ class DatabaseService {
     await this.init()
     if (!this.cacheDb) return null
 
-    const stmt = this.cacheDb!.prepare('SELECT analysis FROM sentence_analysis WHERE sentence_hash = ?')
-    stmt.bind([sentenceHash])
-    if (stmt.step()) {
-      const row = stmt.getAsObject() as any
+    try {
+      const stmt = this.cacheDb!.prepare('SELECT analysis FROM sentence_analysis WHERE sentence_hash = ?')
+      stmt.bind([sentenceHash])
+      if (stmt.step()) {
+        const row = stmt.getAsObject() as any
+        stmt.free()
+        const result = JSON.parse(row.analysis)
+        console.log(`[DatabaseService] 命中缓存: ${sentenceHash}`)
+        return result
+      }
       stmt.free()
-      return JSON.parse(row.analysis)
+      console.log(`[DatabaseService] 未命中缓存: ${sentenceHash}`)
+    } catch (err) {
+      console.error('[DatabaseService] getSentenceAnalysis 失败:', err)
     }
-    stmt.free()
     return null
   }
 
   /**
    * 保存句子分析缓存
    */
-  public async saveSentenceAnalysis(sentenceHash: string, sentence: string, analysis: any): Promise<void> {
+  public async saveSentenceAnalysis(sentenceHash: string, sentence: string, analysis: any, skipSave: boolean = false): Promise<void> {
     await this.init()
     if (!this.cacheDb) return
 
-    this.cacheDb!.run(
-      'INSERT OR REPLACE INTO sentence_analysis (sentence_hash, sentence, analysis, created_at) VALUES (?, ?, ?, ?)',
-      [sentenceHash, sentence, JSON.stringify(analysis), Date.now()]
-    )
+    try {
+      this.cacheDb!.run(
+        'INSERT OR REPLACE INTO sentence_analysis (sentence_hash, sentence, analysis, created_at) VALUES (?, ?, ?, ?)',
+        [sentenceHash, sentence, JSON.stringify(analysis), Date.now()]
+      )
+      if (!skipSave) {
+        await this.saveCacheDb()
+      }
+      console.log(`[DatabaseService] 已保存句子分析缓存: ${sentenceHash.slice(0, 30)}... (skipSave=${skipSave})`)
+    } catch (err) {
+      console.error('[DatabaseService] saveSentenceAnalysis 失败:', err)
+    }
+  }
+
+  /**
+   * 强制保存缓存数据库
+   */
+  public async forceSaveCacheDb(): Promise<void> {
     await this.saveCacheDb()
   }
 
@@ -549,11 +626,16 @@ class DatabaseService {
    * 扫描词组 (本地匹配)
    */
   public async scanPhrases(text: string): Promise<any[]> {
+    console.log(`[DatabaseService] scanPhrases 开始, 文本长度: ${text.length}`)
     await this.init()
-    if (!this.dictDb) return []
+    if (!this.dictDb) {
+      console.warn('[DatabaseService] scanPhrases 失败: dictDb 未加载')
+      return []
+    }
 
     const cleanText = text.replace(/[^a-zA-Z\s'-]/g, ' ').replace(/\s+/g, ' ').trim()
     const words = cleanText.split(' ').filter(w => w.length > 0)
+    console.log(`[DatabaseService] scanPhrases 分词完成, 单词数: ${words.length}`)
     const foundPhrases: any[] = []
     const matchedSet = new Set<string>()
 
@@ -595,6 +677,7 @@ class DatabaseService {
     }
 
     foundPhrases.sort((a, b) => a.startIndex - b.startIndex)
+    console.log(`[DatabaseService] scanPhrases 完成, 找到词组: ${foundPhrases.length}`)
     return foundPhrases
   }
 
@@ -691,31 +774,68 @@ class DatabaseService {
     await this.init()
     if (!this.cacheDb) throw new Error('数据库未加载')
 
+    const cleanedContent = item.content.toLowerCase().trim()
+
+    // 检查是否已存在，防止重复添加
+    const existingId = await this.checkCollected(item.type, cleanedContent)
+    if (existingId !== null) {
+      console.log('[DatabaseService] addCollection: Item already exists with id:', existingId)
+      const stmt = this.cacheDb!.prepare('SELECT created_at FROM collection WHERE id = ?')
+      stmt.bind([existingId])
+      let createdAt = Date.now()
+      if (stmt.step()) {
+        createdAt = (stmt.getAsObject() as any).created_at
+      }
+      stmt.free()
+      return { id: existingId, createdAt }
+    }
+
     const createdAt = Date.now()
-    this.cacheDb!.run(
-      `INSERT INTO collection (type, content, meaning, source_sentence, source_translation, tags, phonetic, extra, created_at, review_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-      [
-        item.type,
-        item.content,
-        item.meaning || null,
-        item.sourceSentence || null,
-        item.sourceTranslation || null,
-        item.tags ? JSON.stringify(item.tags) : '[]',
-        item.phonetic || null,
-        item.extra ? JSON.stringify(item.extra) : null,
-        createdAt
-      ]
-    )
-    await this.saveCacheDb()
+    try {
+      this.cacheDb!.run(
+        `INSERT INTO collection (type, content, meaning, source_sentence, source_translation, tags, phonetic, extra, created_at, review_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+        [
+          item.type,
+          cleanedContent,
+          item.meaning || null,
+          item.sourceSentence || null,
+          item.sourceTranslation || null,
+          item.tags ? JSON.stringify(item.tags) : '[]',
+          item.phonetic || null,
+          item.extra ? JSON.stringify(item.extra) : null,
+          createdAt
+        ]
+      )
+      await this.saveCacheDb()
 
-    // 获取自增ID
-    const stmt = this.cacheDb!.prepare('SELECT last_insert_rowid() as id')
-    stmt.step()
-    const id = (stmt.getAsObject() as any).id
-    stmt.free()
+      // 获取自增ID
+      const stmt = this.cacheDb!.prepare('SELECT last_insert_rowid() as id')
+      stmt.step()
+      const id = (stmt.getAsObject() as any).id
+      stmt.free()
+      
+      console.log('[DatabaseService] addCollection: Inserted new item, last_insert_rowid:', id)
+      
+      // 如果 id 仍然是 0，尝试通过查询获取最新插入的 ID
+      if (id === 0) {
+        console.warn('[DatabaseService] last_insert_rowid returned 0, trying fallback query...')
+        const fallbackStmt = this.cacheDb!.prepare('SELECT id FROM collection WHERE type = ? AND content = ? ORDER BY id DESC LIMIT 1')
+        fallbackStmt.bind([item.type, cleanedContent])
+        let fallbackId = 0
+        if (fallbackStmt.step()) {
+          fallbackId = (fallbackStmt.getAsObject() as any).id
+        }
+        fallbackStmt.free()
+        console.log('[DatabaseService] Fallback ID found:', fallbackId)
+        return { id: fallbackId, createdAt }
+      }
 
-    return { id, createdAt }
+      return { id, createdAt }
+    } catch (err) {
+      console.error('[DatabaseService] addCollection failed:', err)
+      throw err
+    }
   }
 
   /**
@@ -730,17 +850,21 @@ class DatabaseService {
   }
 
   /**
-   * 检查是否已收藏
+   * 检查是否已收藏，返回 ID 或 null
    */
-  public async checkCollected(type: string, content: string): Promise<boolean> {
+  public async checkCollected(type: string, content: string): Promise<number | null> {
     await this.init()
-    if (!this.cacheDb) return false
+    if (!this.cacheDb) return null
 
+    const cleanedContent = content.toLowerCase().trim()
     const stmt = this.cacheDb!.prepare('SELECT id FROM collection WHERE type = ? AND content = ?')
-    stmt.bind([type, content])
-    const collected = stmt.step()
+    stmt.bind([type, cleanedContent])
+    let id: number | null = null
+    if (stmt.step()) {
+      id = (stmt.getAsObject() as any).id
+    }
     stmt.free()
-    return collected
+    return id
   }
 
   /**
