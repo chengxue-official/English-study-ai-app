@@ -20,6 +20,7 @@ type TabType = 'article' | 'collection' | 'settings'
 function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [dictManagerOpen, setDictManagerOpen] = useState(false)
+  const [dictManagerDismissed, setDictManagerDismissed] = useState(false)
   const [tutorialOpen, setTutorialOpen] = useState(false)
   const [inputVisible, setInputVisible] = useState(true)
   const [activeTab, setActiveTab] = useState<TabType>('article')
@@ -205,7 +206,15 @@ function App() {
       <WordPopup />
       <PhrasePopup />
       <UncommonPopup />
-      <DictionaryManager forceShow={dictManagerOpen} onClose={() => setDictManagerOpen(false)} />
+      {(!dictManagerDismissed || dictManagerOpen) && (
+        <DictionaryManager 
+          forceShow={dictManagerOpen} 
+          onClose={() => {
+            setDictManagerOpen(false)
+            setDictManagerDismissed(true)
+          }} 
+        />
+      )}
       <UpdateNotification />
 
       {/* 教程弹窗 */}

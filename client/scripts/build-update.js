@@ -84,6 +84,16 @@ output.on('close', function() {
   `;
   fs.writeFileSync(path.join(updateDistDir, 'index.html'), indexHtml);
   console.log(`index.html has been generated in ${updateDistDir}.`);
+
+  // 6. 复制 stardict.db 到 update-dist 目录 (作为备份下载)
+  const stardictSource = path.join('public', 'stardict.db');
+  const stardictDest = path.join(updateDistDir, 'stardict.db');
+  if (fs.existsSync(stardictSource)) {
+    fs.copyFileSync(stardictSource, stardictDest);
+    console.log(`stardict.db has been copied to ${updateDistDir}.`);
+  } else {
+    console.warn('stardict.db not found in public directory!');
+  }
 });
 
 archive.on('error', function(err) {

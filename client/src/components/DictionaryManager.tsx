@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Capacitor } from '@capacitor/core'
 import { dbService } from '../services/database'
 
 interface DictionaryManagerProps {
@@ -14,6 +15,8 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
   const [fileSize, setFileSize] = useState<string>('未知')
   const [currentDictInfo, setCurrentDictInfo] = useState<string>('')
   const [installedType, setInstalledType] = useState<'lite' | 'full' | null>(null)
+  const [customUrl, setCustomUrl] = useState('')
+  const [showCustomInput, setShowCustomInput] = useState(false)
 
   useEffect(() => {
     if (forceShow) {
@@ -61,6 +64,12 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
     }
   }
 
+  const isSqlite = (data: Uint8Array): boolean => {
+    if (data.length < 16) return false
+    const magic = Array.from(data.slice(0, 15)).map(ch => String.fromCharCode(ch)).join('')
+    return magic === 'SQLite format 3'
+  }
+
   const startDownload = async (type: 'lite' | 'full' = 'lite') => {
     // 查重检查
     if (dbService.isDictLoaded()) {
@@ -72,18 +81,36 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
     setProgress(0)
     setError(null)
 
-    // 尝试多个下载地址
-    const baseUrl = window.location.origin;
-    const urls = [
-      // 1. 优先尝试当前域名下的资源
-      type === 'lite' ? `${baseUrl}/stardict.db` : `${baseUrl}/stardict_full.db`,
-      
-      // 2. 尝试更新站点
-      type === 'lite' ? 'https://english-exam-app-updates.pages.dev/stardict.db' : 'https://english-exam-app-updates.pages.dev/stardict_full.db',
-      
-      // 3. 尝试本地开发后端
-      type === 'lite' ? 'http://localhost:3001/data/stardict.db' : 'http://localhost:3001/data/stardict_full.db',
-    ]
+    const isNative = Capacitor.isNativePlatform()
+    const baseUrl = window.location.origin
+    const urls: string[] = []
+
+    if (isNative) {
+      // 原生平台：优先使用云端更新站点，因为 localhost 在手机上指向手机自身，无法下载
+      urls.push(type === 'lite' 
+        ? 'https://english-exam-app-updates.pages.dev/stardict.db' 
+        : 'https://english-exam-app-updates.pages.dev/stardict_full.db'
+      )
+    } else {
+      // Web 平台：优先尝试当前域名下的资源
+      urls.push(type === 'lite' 
+        ? `${baseUrl}/stardict.db` 
+        : `${baseUrl}/stardict_full.db`
+      )
+      // 其次尝试云端更新站点
+      urls.push(type === 'lite' 
+        ? 'https://english-exam-app-updates.pages.dev/stardict.db' 
+        : 'https://english-exam-app-updates.pages.dev/stardict_full.db'
+      )
+    }
+
+    // 无论什么平台，都可以把本地开发后端作为最后的备用（如果是 Web 平台或者局域网模拟器调试）
+    if (!isNative) {
+      urls.push(type === 'lite' 
+        ? 'http://localhost:3001/data/stardict.db' 
+        : 'http://localhost:3001/data/stardict_full.db'
+      )
+    }
 
     let currentUrlIndex = 0
 
@@ -112,6 +139,13 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
           }
 
           const data = new Uint8Array(buffer)
+          
+          // 关键修复：在导入前先验证是否为合法的 SQLite 数据库
+          if (!isSqlite(data)) {
+            tryNextUrl('下载的文件不是有效的 SQLite 数据库格式（可能是 404 页面）')
+            return
+          }
+
           try {
             console.log('[DictionaryManager] 下载完成，开始导入数据库...')
             setStatus('importing')
@@ -140,12 +174,88 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
       if (currentUrlIndex < urls.length) {
         attemptDownload(urls[currentUrlIndex])
       } else {
-        setError('词典资源加载失败。请确保应用安装完整，或检查网络连接。')
+        if (type === 'full') {
+          setError('Ultimate 版词典文件较大 (616MB)，无法直接从云端下载。建议点击下方“手动导入”，或在电脑上下载后传输到手机导入。')
+        } else {
+          setError('精简版词典下载失败。请检查网络连接，或尝试手动导入。')
+        }
         setStatus('error')
       }
     }
 
     attemptDownload(urls[0])
+  }
+
+  const startCustomDownload = async () => {
+    if (!customUrl.trim()) {
+      alert('请输入有效的下载链接')
+      return
+    }
+    
+    setStatus('downloading')
+    setProgress(0)
+    setError(null)
+    
+    const attemptDownload = (url: string) => {
+      console.log(`[DictionaryManager] 尝试从自定义 URL 下载: ${url}`)
+      const xhr = new XMLHttpRequest()
+      xhr.open('GET', url, true)
+      xhr.responseType = 'arraybuffer'
+
+      xhr.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const percent = Math.round((event.loaded / event.total) * 100)
+          setProgress(percent)
+          setFileSize(`${(event.total / 1024 / 1024).toFixed(1)} MB`)
+        }
+      }
+
+      xhr.onload = async () => {
+        const isSuccess = xhr.status === 200 || (xhr.status === 0 && xhr.response?.byteLength > 0)
+        
+        if (isSuccess) {
+          const buffer = xhr.response
+          if (!buffer || buffer.byteLength === 0) {
+            setError('下载的文件为空')
+            setStatus('error')
+            return
+          }
+
+          const data = new Uint8Array(buffer)
+          
+          if (!isSqlite(data)) {
+            setError('下载的文件不是有效的 SQLite 数据库格式（可能是 404 页面或网页）')
+            setStatus('error')
+            return
+          }
+
+          try {
+            console.log('[DictionaryManager] 下载完成，开始导入数据库...')
+            setStatus('importing')
+            await dbService.importDictDb(data)
+            console.log('[DictionaryManager] 数据库导入成功')
+            setStatus('ready')
+            checkCurrentDict()
+            onComplete?.()
+          } catch (err: any) {
+            console.error('[DictionaryManager] 导入失败:', err)
+            setError(`导入失败: ${err?.message || '未知错误'}`)
+            setStatus('error')
+          }
+        } else {
+          setError(`下载失败: HTTP ${xhr.status}`)
+          setStatus('error')
+        }
+      }
+
+      xhr.onerror = () => {
+        setError('网络连接错误，请检查链接是否支持跨域(CORS)或网络是否正常')
+        setStatus('error')
+      }
+      xhr.send()
+    }
+
+    attemptDownload(customUrl.trim())
   }
 
   const handleManualImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -300,6 +410,36 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
                   onChange={handleManualImport}
                 />
               </label>
+            </div>
+
+            <div className="mt-1">
+              <button
+                onClick={() => setShowCustomInput(!showCustomInput)}
+                className="text-xs text-blue-600 hover:text-blue-800 font-semibold flex items-center justify-center gap-1 mx-auto py-1"
+              >
+                <svg className={`w-3 h-3 transition-transform ${showCustomInput ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
+                </svg>
+                {showCustomInput ? '收起自定义下载' : '使用自定义链接下载'}
+              </button>
+              
+              {showCustomInput && (
+                <div className="mt-2 p-3 bg-gray-50 rounded-2xl border border-gray-100 space-y-2 animate-in fade-in slide-in-from-top-2 duration-200">
+                  <input
+                    type="text"
+                    placeholder="请输入 .db 文件的直链下载地址"
+                    value={customUrl}
+                    onChange={e => setCustomUrl(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-xs focus:outline-none focus:border-blue-500"
+                  />
+                  <button
+                    onClick={startCustomDownload}
+                    className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl transition-colors"
+                  >
+                    开始下载
+                  </button>
+                </div>
+              )}
             </div>
 
             <button
