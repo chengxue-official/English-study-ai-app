@@ -1,4 +1,5 @@
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, CapacitorHttp } from '@capacitor/core';
+import { Filesystem, Directory } from '@capacitor/filesystem';
 
 export class OcrService {
   private static JOB_URL = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs";
@@ -13,53 +14,77 @@ export class OcrService {
     const isWeb = platform === 'web';
     console.log(`[OcrService] 开始识别, 平台: ${platform}`);
 
+    let tempFilePath = "";
+
     try {
       // 1. 提交任务
       const submitUrl = isWeb ? "/ocr-api/api/v2/ocr/jobs" : this.JOB_URL;
-      
-      const formData = new FormData();
-      formData.append('model', this.MODEL);
-      formData.append('optionalPayload', JSON.stringify({
-        useDocOrientationClassify: false,
-        useDocUnwarping: false,
-        useChartRecognition: false
-      }));
-      formData.append('file', file);
+      let responseData;
 
-      console.log(`[OcrService] 正在提交任务到: ${submitUrl}`);
-      
-      const headers: any = { 
-        "Authorization": `Bearer ${this.TOKEN}`
-      };
+      if (isWeb) {
+        const formData = new FormData();
+        formData.append('model', this.MODEL);
+        formData.append('optionalPayload', JSON.stringify({
+          useDocOrientationClassify: false,
+          useDocUnwarping: false,
+          useChartRecognition: false
+        }));
+        formData.append('file', file);
 
-      // Android 端通过原生 Fetch 伪造请求头
-      if (!isWeb) {
-        headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-        headers["Origin"] = "https://paddleocr.aistudio-app.com";
-        headers["Referer"] = "https://paddleocr.aistudio-app.com/";
+        const response = await fetch(submitUrl, {
+          method: 'POST',
+          headers: { "Authorization": `Bearer ${this.TOKEN}` },
+          body: formData
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`提交失败: ${response.status} ${errorText}`);
+        }
+        responseData = await response.json();
+      } else {
+        // Android/iOS: 使用 Filesystem + uploadFile 绕过所有 WebView 限制
+        console.log(`[OcrService] 正在准备原生上传...`);
+        
+        // a. 将 Blob 写入临时文件
+        const fileName = `ocr_${Date.now()}.png`;
+        const base64Data = await this.blobToBase64(file);
+        
+        await Filesystem.writeFile({
+          path: fileName,
+          data: base64Data,
+          directory: Directory.Cache
+        });
+        
+        const fileUri = await Filesystem.getUri({
+          path: fileName,
+          directory: Directory.Cache
+        });
+        tempFilePath = fileName;
+
+        // b. 使用原生上传
+        const response = await (CapacitorHttp as any).uploadFile({
+          url: submitUrl,
+          filePath: fileUri.uri,
+          name: 'file',
+          headers: { "Authorization": `Bearer ${this.TOKEN}` },
+          params: {
+            "model": this.MODEL,
+            "optionalPayload": JSON.stringify({
+              useDocOrientationClassify: false,
+              useDocUnwarping: false,
+              useChartRecognition: false
+            })
+          }
+        });
+
+        if (response.status < 200 || response.status >= 300) {
+          throw new Error(`原生提交失败: ${response.status} ${JSON.stringify(response.data)}`);
+        }
+        responseData = response.data;
       }
-
-      console.log(`[OcrService] 请求头:`, JSON.stringify(headers));
-
-      const response = await fetch(submitUrl, {
-        method: 'POST',
-        headers: headers,
-        body: formData
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        let errorMsg = errorText;
-        try {
-          const errorJson = JSON.parse(errorText);
-          errorMsg = errorJson.msg || errorJson.message || errorText;
-        } catch (e) {}
-        console.error(`[OcrService] 提交失败: 状态码=${response.status}, 详情=${errorText}`);
-        throw new Error(`提交失败: ${response.status} ${errorMsg}`);
-      }
       
-      const jobData = await response.json();
-      const jobId = jobData.data.jobId;
+      const jobId = responseData.data.jobId;
       console.log(`[OcrService] 任务提交成功, jobId: ${jobId}`);
 
       // 2. 轮询状态
@@ -106,7 +131,6 @@ export class OcrService {
         } else if (jsonlUrl.includes('bcebos.com')) {
           finalResultUrl = jsonlUrl.replace(/https:\/\/.*\.bcebos\.com/, "/ocr-storage");
         }
-        console.log(`[OcrService] Web 代理转换: ${jsonlUrl} -> ${finalResultUrl}`);
       }
       
       const resultResponse = await fetch(finalResultUrl);
@@ -147,6 +171,30 @@ export class OcrService {
       const errorInfo = err instanceof Error ? { message: err.message, stack: err.stack } : { message: String(err) };
       console.error('[OcrService] 识别过程出错:', JSON.stringify(errorInfo));
       throw err instanceof Error ? err : new Error('OCR 识别失败');
+    } finally {
+      // 清理临时文件
+      if (tempFilePath) {
+        Filesystem.deleteFile({
+          path: tempFilePath,
+          directory: Directory.Cache
+        }).catch(e => console.warn('[OcrService] 临时文件清理失败:', e));
+      }
     }
+  }
+
+  /**
+   * 辅助函数：Blob 转 Base64
+   */
+  private static async blobToBase64(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64String = reader.result as string;
+        // 去掉 data:image/png;base64, 前缀
+        resolve(base64String.split(',')[1]);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
   }
 }

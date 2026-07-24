@@ -1,6 +1,6 @@
 {
-  "version": "0.1.13",
-  "url": "https://english-exam-app-updates.pages.dev/dist-0.1.13.zip",
-  "date": "2026-07-24T19:30:00.000Z",
-  "notes": "修复 Android 端 500 错误：回归原生 Fetch 并实施请求头伪装（Origin/Referer 欺骗）。"
+  "version": "0.1.14",
+  "url": "https://english-exam-app-updates.pages.dev/dist-0.1.14.zip",
+  "date": "2026-07-24T19:45:00.000Z",
+  "notes": "修复 Android 端 OCR 失败：采用 Filesystem + uploadFile 原生上传方案，彻底解决 403/500 兼容性问题。"
 }
