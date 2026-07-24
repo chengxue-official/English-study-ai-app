@@ -1,6 +1,6 @@
 {
-  "version": "0.1.7",
-  "url": "https://english-exam-app-updates.pages.dev/dist-0.1.7.zip",
-  "date": "2026-07-24T15:00:00.000Z",
-  "notes": "修复 OCR 跨域问题 (CORS)；启用原生 HTTP 插件；优化识别日志。"
+  "version": "0.1.9",
+  "url": "https://english-exam-app-updates.pages.dev/dist-0.1.9.zip",
+  "date": "2026-07-24T16:30:00.000Z",
+  "notes": "修复 Vite 代理配置缺失问题；统一 OCR 请求逻辑为 fetch 以利用 CapacitorHttp 拦截器。"
 }

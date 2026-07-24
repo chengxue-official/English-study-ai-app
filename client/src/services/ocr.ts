@@ -1,10 +1,7 @@
 import { Capacitor } from '@capacitor/core';
 
 export class OcrService {
-  private static JOB_URL_BASE = Capacitor.getPlatform() === 'web' 
-    ? "/ocr-api/api/v2/ocr/jobs" 
-    : "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs";
-  
+  private static JOB_URL = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs";
   private static TOKEN = "9658a109a67edf61a60b83b282de50e44bbd05ba";
   private static MODEL = "PaddleOCR-VL-1.6";
 
@@ -12,10 +9,12 @@ export class OcrService {
    * 识别图片中的文字
    */
   public static async recognize(file: File | Blob): Promise<string> {
-    const JOB_URL = this.JOB_URL_BASE;
+    const isWeb = Capacitor.getPlatform() === 'web';
+    console.log(`[OcrService] 开始识别, 平台: ${Capacitor.getPlatform()}`);
+
     try {
-      console.log(`[OcrService] 平台: ${Capacitor.getPlatform()}, 提交任务: ${file instanceof File ? file.name : 'blob'}`);
-      console.log(`[OcrService] 正在发送请求到: ${JOB_URL}`);
+      // 1. 提交任务
+      const submitUrl = isWeb ? "/ocr-api/api/v2/ocr/jobs" : this.JOB_URL;
       
       const formData = new FormData();
       formData.append('model', this.MODEL);
@@ -26,98 +25,98 @@ export class OcrService {
       }));
       formData.append('file', file);
 
-      const headers = {
-        "Authorization": `bearer ${this.TOKEN}`
-      };
-
-      // 提交任务
-      const jobResponse = await fetch(JOB_URL, {
+      console.log(`[OcrService] 正在提交任务到: ${submitUrl}`);
+      
+      const response = await fetch(submitUrl, {
         method: 'POST',
-        headers,
+        headers: { "Authorization": `bearer ${this.TOKEN}` },
         body: formData
       });
 
-      if (!jobResponse.ok) {
-        const text = await jobResponse.text();
-        console.error(`[OcrService] 提交任务失败, status: ${jobResponse.status}, response: ${text}`);
-        throw new Error(`提交任务失败: ${text}`);
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`提交失败: ${response.status} ${errorText}`);
       }
-
-      const jobData = await jobResponse.json();
+      
+      const jobData = await response.json();
       const jobId = jobData.data.jobId;
       console.log(`[OcrService] 任务提交成功, jobId: ${jobId}`);
 
-      // 轮询状态
+      // 2. 轮询状态
       let jsonlUrl = "";
       let attempts = 0;
-      const maxAttempts = 20; // 最多等待 60 秒 (20 * 3s)
+      const maxAttempts = 30;
 
       while (attempts < maxAttempts) {
-        const statusResponse = await fetch(`${JOB_URL}/${jobId}`, { headers });
-        if (!statusResponse.ok) throw new Error('查询状态失败');
-        
-        const statusData = await statusResponse.json();
-        const state = statusData.data.state;
-        
-        if (state === 'done') {
-          jsonlUrl = statusData.data.resultUrl.jsonUrl;
-          console.log(`[OcrService] 任务完成`);
-          break;
-        } else if (state === 'failed') {
-          throw new Error(`任务失败: ${statusData.data.errorMsg}`);
-        }
-        
         attempts++;
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        const statusUrl = isWeb ? `/ocr-api/api/v2/ocr/jobs/${jobId}` : `${this.JOB_URL}/${jobId}`;
+        
+        const statusResponse = await fetch(statusUrl, {
+          headers: { "Authorization": `bearer ${this.TOKEN}` }
+        });
+
+        if (statusResponse.ok) {
+          const statusData = await statusResponse.json();
+          const state = statusData.data.state;
+          console.log(`[OcrService] 轮询状态 (${attempts}): ${state}`);
+          
+          if (state === 'done') {
+            jsonlUrl = statusData.data.resultUrl.jsonUrl;
+            break;
+          } else if (state === 'failed') {
+            throw new Error(`任务失败: ${statusData.data.errorMsg}`);
+          }
+        } else {
+          console.warn(`[OcrService] 轮询请求失败: ${statusResponse.status}`);
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 5000));
       }
 
-      if (!jsonlUrl) {
-        throw new Error('识别超时，请稍后重试');
-      }
+      if (!jsonlUrl) throw new Error('识别超时');
 
-      // 获取结果
-      let finalJsonlUrl = jsonlUrl;
-      if (Capacitor.getPlatform() === 'web' && finalJsonlUrl.startsWith('https://paddleocr.aistudio-app.com')) {
-        finalJsonlUrl = finalJsonlUrl.replace('https://paddleocr.aistudio-app.com', '/ocr-api');
+      // 3. 获取结果
+      console.log(`[OcrService] 正在获取结果: ${jsonlUrl}`);
+      
+      // Web 端尝试通过代理
+      const finalResultUrl = isWeb ? jsonlUrl.replace(/https:\/\/.*\.aistudio-app\.com/, "/ocr-api") : jsonlUrl;
+      const resultResponse = await fetch(finalResultUrl);
+      
+      if (!resultResponse.ok) {
+        throw new Error(`获取结果失败: ${resultResponse.status}`);
       }
       
-      const jsonlResponse = await fetch(finalJsonlUrl);
-      if (!jsonlResponse.ok) throw new Error('获取结果失败');
-      
-      const jsonlText = await jsonlResponse.text();
-      const lines = jsonlText.trim().split('\n');
-      
-      let markdownText = "";
+      const resultText = await resultResponse.text();
+
+      // 4. 解析 JSONL
+      const lines = resultText.trim().split('\n');
+      let markdown = "";
       for (const line of lines) {
-        if (!line.trim()) continue;
         try {
-          const result = JSON.parse(line).result;
-          if (result && result.layoutParsingResults) {
-            for (const res of result.layoutParsingResults) {
-              markdownText += res.markdown.text + "\n\n";
+          const data = JSON.parse(line);
+          if (data.result && data.result.layoutParsingResults) {
+            for (const res of data.result.layoutParsingResults) {
+              markdown += res.markdown.text + "\n\n";
             }
           }
-        } catch (e) {
-          console.warn('[OcrService] 解析行失败:', line);
-        }
+        } catch (e) { /* 忽略解析失败的行 */ }
       }
 
-      // 过滤 Markdown 字符
-      const plainText = markdownText
-        .replace(/(\*\*|__)(.*?)\1/g, '$2') // 粗体
-        .replace(/(\*|_)(.*?)\1/g, '$2') // 斜体
-        .replace(/~~(.*?)~~/g, '$1') // 删除线
-        .replace(/`{1,3}([^`]+)`{1,3}/g, '$1') // 代码块
-        .replace(/\[(.*?)\]\(.*?\)/g, '$1') // 链接
-        .replace(/^#+\s+(.*)$/gm, '$1') // 标题
-        .replace(/^\s*[-*+]\s+(.*)$/gm, '$1') // 无序列表
-        .replace(/^\s*\d+\.\s+(.*)$/gm, '$1') // 有序列表
-        .replace(/^\s*>\s+(.*)$/gm, '$1') // 引用
+      // 5. 清理 Markdown
+      return markdown
+        .replace(/(\*\*|__)(.*?)\1/g, '$2')
+        .replace(/(\*|_)(.*?)\1/g, '$2')
+        .replace(/~~(.*?)~~/g, '$1')
+        .replace(/`{1,3}([^`]+)`{1,3}/g, '$1')
+        .replace(/\[(.*?)\]\(.*?\)/g, '$1')
+        .replace(/^#+\s+(.*)$/gm, '$1')
+        .replace(/^\s*[-*+]\s+(.*)$/gm, '$1')
+        .replace(/^\s*\d+\.\s+(.*)$/gm, '$1')
+        .replace(/^\s*>\s+(.*)$/gm, '$1')
         .trim();
 
-      return plainText;
     } catch (err) {
-      console.error('[OcrService] 错误:', err);
+      console.error('[OcrService] 识别过程出错:', err);
       throw err instanceof Error ? err : new Error('OCR 识别失败');
     }
   }
