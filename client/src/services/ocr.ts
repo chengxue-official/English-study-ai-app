@@ -1,4 +1,4 @@
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, CapacitorHttp } from '@capacitor/core';
 
 export class OcrService {
   private static JOB_URL = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs";
@@ -9,8 +9,9 @@ export class OcrService {
    * 识别图片中的文字
    */
   public static async recognize(file: File | Blob): Promise<string> {
-    const isWeb = Capacitor.getPlatform() === 'web';
-    console.log(`[OcrService] 开始识别, 平台: ${Capacitor.getPlatform()}`);
+    const platform = Capacitor.getPlatform();
+    const isWeb = platform === 'web';
+    console.log(`[OcrService] 开始识别, 平台: ${platform}`);
 
     try {
       // 1. 提交任务
@@ -27,23 +28,43 @@ export class OcrService {
 
       console.log(`[OcrService] 正在提交任务到: ${submitUrl}`);
       
-      const headers = { "Authorization": `Bearer ${this.TOKEN}` };
+      const headers = { 
+        "Authorization": `Bearer ${this.TOKEN}`,
+        // 尝试在原生端模拟纯净请求
+        ...(isWeb ? {} : { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" })
+      };
       console.log(`[OcrService] 请求头:`, JSON.stringify(headers));
 
-      const response = await fetch(submitUrl, {
-        method: 'POST',
-        headers: headers,
-        body: formData
-      });
+      let responseData;
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`[OcrService] 提交失败详情: 状态码=${response.status}, 响应体=${errorText}`);
-        throw new Error(`提交失败: ${response.status} ${errorText}`);
+      if (isWeb) {
+        const response = await fetch(submitUrl, {
+          method: 'POST',
+          headers: headers,
+          body: formData
+        });
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`提交失败: ${response.status} ${errorText}`);
+        }
+        responseData = await response.json();
+      } else {
+        // Android/iOS 使用原生 CapacitorHttp 绕过 WebView 的 Origin 限制
+        const response = await CapacitorHttp.post({
+          url: submitUrl,
+          headers: headers,
+          data: formData,
+          connectTimeout: 30000,
+          readTimeout: 30000
+        });
+        if (response.status < 200 || response.status >= 300) {
+          console.error(`[OcrService] 原生提交失败:`, response);
+          throw new Error(`提交失败: ${response.status} ${JSON.stringify(response.data)}`);
+        }
+        responseData = response.data;
       }
       
-      const jobData = await response.json();
-      const jobId = jobData.data.jobId;
+      const jobId = responseData.data.jobId;
       console.log(`[OcrService] 任务提交成功, jobId: ${jobId}`);
 
       // 2. 轮询状态
@@ -55,15 +76,30 @@ export class OcrService {
         attempts++;
         const statusUrl = isWeb ? `/ocr-api/api/v2/ocr/jobs/${jobId}` : `${this.JOB_URL}/${jobId}`;
         
-        const statusResponse = await fetch(statusUrl, {
-          headers: { "Authorization": `Bearer ${this.TOKEN}` }
-        });
-
-        if (!statusResponse.ok) {
-          const errorText = await statusResponse.text();
-          console.error(`[OcrService] 轮询请求失败: 状态码=${statusResponse.status}, 响应体=${errorText}`);
+        let statusData;
+        if (isWeb) {
+          const statusResponse = await fetch(statusUrl, {
+            headers: { "Authorization": `Bearer ${this.TOKEN}` }
+          });
+          if (!statusResponse.ok) {
+            const errorText = await statusResponse.text();
+            console.error(`[OcrService] 轮询请求失败: 状态码=${statusResponse.status}, 响应体=${errorText}`);
+          } else {
+            statusData = await statusResponse.json();
+          }
         } else {
-          const statusData = await statusResponse.json();
+          const statusResponse = await CapacitorHttp.get({
+            url: statusUrl,
+            headers: { "Authorization": `Bearer ${this.TOKEN}` }
+          });
+          if (statusResponse.status !== 200) {
+            console.error(`[OcrService] 原生轮询失败:`, statusResponse);
+          } else {
+            statusData = statusResponse.data;
+          }
+        }
+
+        if (statusData) {
           const state = statusData.data.state;
           console.log(`[OcrService] 轮询状态 (${attempts}): ${state}`);
           
@@ -83,24 +119,23 @@ export class OcrService {
       // 3. 获取结果
       console.log(`[OcrService] 正在获取结果: ${jsonlUrl}`);
       
-      // Web 端尝试通过代理解决 CORS
-      let finalResultUrl = jsonlUrl;
+      let resultText = "";
       if (isWeb) {
+        let finalResultUrl = jsonlUrl;
         if (jsonlUrl.includes('aistudio-app.com')) {
           finalResultUrl = jsonlUrl.replace(/https:\/\/.*\.aistudio-app\.com/, "/ocr-api");
         } else if (jsonlUrl.includes('bcebos.com')) {
           finalResultUrl = jsonlUrl.replace(/https:\/\/.*\.bcebos\.com/, "/ocr-storage");
         }
         console.log(`[OcrService] Web 代理转换: ${jsonlUrl} -> ${finalResultUrl}`);
+        const resultResponse = await fetch(finalResultUrl);
+        if (!resultResponse.ok) throw new Error(`获取结果失败: ${resultResponse.status}`);
+        resultText = await resultResponse.text();
+      } else {
+        const resultResponse = await CapacitorHttp.get({ url: jsonlUrl });
+        if (resultResponse.status !== 200) throw new Error(`获取结果失败: ${resultResponse.status}`);
+        resultText = typeof resultResponse.data === 'string' ? resultResponse.data : JSON.stringify(resultResponse.data);
       }
-      
-      const resultResponse = await fetch(finalResultUrl);
-      
-      if (!resultResponse.ok) {
-        throw new Error(`获取结果失败: ${resultResponse.status}`);
-      }
-      
-      const resultText = await resultResponse.text();
 
       // 4. 解析 JSONL
       const lines = resultText.trim().split('\n');
@@ -130,7 +165,8 @@ export class OcrService {
         .trim();
 
     } catch (err) {
-      console.error('[OcrService] 识别过程出错:', err);
+      const errorInfo = err instanceof Error ? { message: err.message, stack: err.stack } : { message: String(err) };
+      console.error('[OcrService] 识别过程出错:', JSON.stringify(errorInfo));
       throw err instanceof Error ? err : new Error('OCR 识别失败');
     }
   }
