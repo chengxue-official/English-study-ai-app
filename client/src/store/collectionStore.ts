@@ -33,6 +33,7 @@ interface CollectionState {
   searchQuery: string
   // 统计
   stats: { total: number; byType: Record<string, number> } | null
+  reviewStats: { stage: number; count: number; label: string }[] | null
   // 收藏状态缓存（用于快速判断是否已收藏并获取ID）
   collectedMap: Map<string, number | null> // key: "type:content", value: id or null
 
@@ -51,6 +52,7 @@ interface CollectionState {
   removeCollection: (id: number) => Promise<void>
   checkCollected: (type: CollectionType, content: string) => Promise<number | null>
   fetchStats: () => Promise<void>
+  fetchReviewStats: () => Promise<void>
   updateReview: (id: number, known?: boolean) => Promise<{ nextReviewAt?: number; days?: number } | null>
   advanceReview: (id: number) => Promise<boolean>
   setFilterType: (type: CollectionType | 'all') => void
@@ -70,6 +72,7 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
   filterTag: null,
   searchQuery: '',
   stats: null,
+  reviewStats: null,
   collectedMap: new Map(),
 
   fetchItems: async (reset = false, dueReview = false) => {
@@ -202,6 +205,15 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
     try {
       const data = await dbService.getCollectionStats()
       set({ stats: data })
+    } catch {
+      // ignore
+    }
+  },
+
+  fetchReviewStats: async () => {
+    try {
+      const data = await dbService.getReviewStats()
+      set({ reviewStats: data })
     } catch {
       // ignore
     }

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Capacitor } from '@capacitor/core'
 import { dbService } from '../services/database'
+import { downloadToOPFS } from '../services/opfs'
 
 interface DictionaryManagerProps {
   onComplete?: () => void
@@ -12,7 +13,7 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
   const [status, setStatus] = useState<'checking' | 'missing' | 'downloading' | 'importing' | 'ready' | 'error'>('checking')
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState<string | null>(null)
-  const [fileSize, setFileSize] = useState<string>('未知')
+  const [fileSize] = useState<string>('未知')
   const [currentDictInfo, setCurrentDictInfo] = useState<string>('')
   const [installedType, setInstalledType] = useState<'lite' | 'full' | null>(null)
   const [customUrl, setCustomUrl] = useState('')
@@ -45,8 +46,20 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
       console.log('[DictionaryManager] 正在检查词典状态...')
       setStatus('checking')
       
+      // 检查 OPFS 支持 (仅在 Web 平台)
+      if (!Capacitor.isNativePlatform()) {
+        const supported = await dbService.isOpfsSupported()
+        if (!supported) {
+          setStatus('error')
+          setError('您的浏览器不支持 OPFS (Origin Private File System)，无法处理超大词典文件。请尝试使用最新版本的 Chrome、Edge 或 Safari。')
+          return
+        }
+      }
+
       // 尝试初始化数据库服务
+      console.log('[DictionaryManager] Calling dbService.init()...')
       await dbService.init()
+      console.log('[DictionaryManager] dbService.init() completed')
       
       if (dbService.isDictLoaded()) {
         console.log('[DictionaryManager] 词典已加载')
@@ -64,11 +77,7 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
     }
   }
 
-  const isSqlite = (data: Uint8Array): boolean => {
-    if (data.length < 16) return false
-    const magic = Array.from(data.slice(0, 15)).map(ch => String.fromCharCode(ch)).join('')
-    return magic === 'SQLite format 3'
-  }
+
 
   const startDownload = async (type: 'lite' | 'full' = 'lite') => {
     // 查重检查
@@ -114,58 +123,37 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
 
     let currentUrlIndex = 0
 
-    const attemptDownload = (url: string) => {
+    const attemptDownload = async (url: string) => {
       console.log(`[DictionaryManager] 尝试从 URL 下载: ${url}`)
-      const xhr = new XMLHttpRequest()
-      xhr.open('GET', url, true)
-      xhr.responseType = 'arraybuffer'
-
-      xhr.onprogress = (event) => {
-        if (event.lengthComputable) {
-          const percent = Math.round((event.loaded / event.total) * 100)
-          setProgress(percent)
-          setFileSize(`${(event.total / 1024 / 1024).toFixed(1)} MB`)
-        }
-      }
-
-      xhr.onload = async () => {
-        const isSuccess = xhr.status === 200 || (xhr.status === 0 && xhr.response?.byteLength > 0)
+      try {
+        const success = await downloadToOPFS(url, 'stardict.db', (prog) => {
+          setProgress(Math.round(prog * 100))
+          // 无法准确获取总大小，只能显示进度百分比
+        })
         
-        if (isSuccess) {
-          const buffer = xhr.response
-          if (!buffer || buffer.byteLength === 0) {
-            tryNextUrl('下载的文件为空')
-            return
-          }
-
-          const data = new Uint8Array(buffer)
+        if (success) {
+          console.log('[DictionaryManager] 下载完成，开始验证...')
+          setStatus('importing')
           
-          // 关键修复：在导入前先验证是否为合法的 SQLite 数据库
-          if (!isSqlite(data)) {
-            tryNextUrl('下载的文件不是有效的 SQLite 数据库格式（可能是 404 页面）')
+          // 通知数据库服务重新加载
+          await dbService.init()
+          const exists = await dbService.refreshStatus()
+          
+          if (!exists) {
+            tryNextUrl('下载的文件不是有效的 SQLite 数据库格式')
             return
           }
-
-          try {
-            console.log('[DictionaryManager] 下载完成，开始导入数据库...')
-            setStatus('importing')
-            await dbService.importDictDb(data)
-            console.log('[DictionaryManager] 数据库导入成功')
-            setStatus('ready')
-            checkCurrentDict()
-            onComplete?.()
-          } catch (err: any) {
-            console.error('[DictionaryManager] 导入失败:', err)
-            setError(`导入失败: ${err?.message || '未知错误'}`)
-            setStatus('error')
-          }
+          
+          console.log('[DictionaryManager] 数据库加载成功')
+          setStatus('ready')
+          checkCurrentDict()
+          onComplete?.()
         } else {
-          tryNextUrl(`HTTP ${xhr.status}`)
+          tryNextUrl('下载失败')
         }
+      } catch (err: any) {
+        tryNextUrl(err.message || '网络连接错误')
       }
-
-      xhr.onerror = () => tryNextUrl('网络连接错误')
-      xhr.send()
     }
 
     const tryNextUrl = (reason: string) => {
@@ -196,63 +184,38 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
     setProgress(0)
     setError(null)
     
-    const attemptDownload = (url: string) => {
+    const attemptDownload = async (url: string) => {
       console.log(`[DictionaryManager] 尝试从自定义 URL 下载: ${url}`)
-      const xhr = new XMLHttpRequest()
-      xhr.open('GET', url, true)
-      xhr.responseType = 'arraybuffer'
-
-      xhr.onprogress = (event) => {
-        if (event.lengthComputable) {
-          const percent = Math.round((event.loaded / event.total) * 100)
-          setProgress(percent)
-          setFileSize(`${(event.total / 1024 / 1024).toFixed(1)} MB`)
-        }
-      }
-
-      xhr.onload = async () => {
-        const isSuccess = xhr.status === 200 || (xhr.status === 0 && xhr.response?.byteLength > 0)
+      try {
+        const success = await downloadToOPFS(url, 'stardict.db', (prog) => {
+          setProgress(Math.round(prog * 100))
+        })
         
-        if (isSuccess) {
-          const buffer = xhr.response
-          if (!buffer || buffer.byteLength === 0) {
-            setError('下载的文件为空')
-            setStatus('error')
-            return
-          }
-
-          const data = new Uint8Array(buffer)
+        if (success) {
+          console.log('[DictionaryManager] 下载完成，开始验证...')
+          setStatus('importing')
           
-          if (!isSqlite(data)) {
-            setError('下载的文件不是有效的 SQLite 数据库格式（可能是 404 页面或网页）')
+          await dbService.init()
+          const exists = await dbService.refreshStatus()
+          
+          if (!exists) {
+            setError('下载的文件不是有效的 SQLite 数据库格式')
             setStatus('error')
             return
           }
-
-          try {
-            console.log('[DictionaryManager] 下载完成，开始导入数据库...')
-            setStatus('importing')
-            await dbService.importDictDb(data)
-            console.log('[DictionaryManager] 数据库导入成功')
-            setStatus('ready')
-            checkCurrentDict()
-            onComplete?.()
-          } catch (err: any) {
-            console.error('[DictionaryManager] 导入失败:', err)
-            setError(`导入失败: ${err?.message || '未知错误'}`)
-            setStatus('error')
-          }
+          
+          console.log('[DictionaryManager] 数据库加载成功')
+          setStatus('ready')
+          checkCurrentDict()
+          onComplete?.()
         } else {
-          setError(`下载失败: HTTP ${xhr.status}`)
+          setError('下载失败')
           setStatus('error')
         }
-      }
-
-      xhr.onerror = () => {
+      } catch (err: any) {
         setError('网络连接错误，请检查链接是否支持跨域(CORS)或网络是否正常')
         setStatus('error')
       }
-      xhr.send()
     }
 
     attemptDownload(customUrl.trim())
@@ -263,35 +226,33 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
     if (!file) return
 
     setStatus('importing')
+    setProgress(0)
     setError(null)
     
     try {
       console.log(`[DictionaryManager] 开始手动导入文件: ${file.name}, 大小: ${file.size}`)
-      const reader = new FileReader()
-      reader.onload = async (e) => {
-        try {
-          const buffer = e.target?.result as ArrayBuffer
-          if (!buffer) throw new Error('读取文件失败')
-          
-          const data = new Uint8Array(buffer)
-          await dbService.importDictDb(data)
-          console.log('[DictionaryManager] 手动导入成功')
-          setStatus('ready')
-          checkCurrentDict()
-          onComplete?.()
-        } catch (err: any) {
-          console.error('[DictionaryManager] 手动导入失败:', err)
-          setError(`导入失败: ${err?.message || '未知错误'}`)
-          setStatus('error')
-        }
-      }
-      reader.onerror = () => {
-        setError('读取文件出错')
+      
+      // 使用 dbService.importDictFile 进行内存安全的导入
+      await dbService.importDictFile(file, (prog) => {
+        setProgress(Math.round(prog * 100))
+      })
+      
+      const exists = await dbService.refreshStatus()
+      
+      if (!exists) {
+        setError('导入失败：数据库加载失败。请检查文件是否为有效的 SQLite 格式，或尝试重启应用。')
         setStatus('error')
+        return
       }
-      reader.readAsArrayBuffer(file)
+      
+      console.log('[DictionaryManager] 手动导入成功')
+      setStatus('ready')
+      checkCurrentDict()
+      onComplete?.()
     } catch (err: any) {
-      setError(`导入失败: ${err?.message || '未知错误'}`)
+      console.error('[DictionaryManager] 手动导入失败:', err)
+      const msg = typeof err === 'object' ? JSON.stringify(err) : (err?.message || '未知错误');
+      setError(`导入失败: ${msg}`)
       setStatus('error')
     }
   }

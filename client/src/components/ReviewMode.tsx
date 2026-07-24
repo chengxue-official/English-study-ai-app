@@ -41,12 +41,12 @@ function highlightPosInText(text: string) {
   return <span>{text}</span>
 }
 
-type ReviewState = 'ready' | 'question' | 'show-answer' | 'group-complete' | 'all-complete' | 'spelling-select' | 'spelling'
+type ReviewState = 'ready' | 'question' | 'show-answer' | 'group-complete' | 'all-complete' | 'spelling-select' | 'spelling' | 'stats'
 
 const GROUP_SIZE = 10
 
 export default function ReviewMode({ onClose }: { onClose: () => void }) {
-  const { items, fetchItems, updateReview } = useCollectionStore()
+  const { items, fetchItems, updateReview, reviewStats, fetchReviewStats } = useCollectionStore()
   const [state, setState] = useState<ReviewState>('ready')
   // 全部待复习单词
   const [allWords, setAllWords] = useState<CollectionItem[]>([])
@@ -69,6 +69,7 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
   const [spellingAnswers, setSpellingAnswers] = useState<Record<number, string>>({})
   const [spellingResults, setSpellingResults] = useState<Record<number, boolean>>({})
   const [spellingSubmitted, setSpellingSubmitted] = useState(false)
+  const [currentSpellingIndex, setCurrentSpellingIndex] = useState(0)
   const autoPlayedRef = useRef(false)
 
   // 词典数据状态
@@ -224,11 +225,11 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
     if (state === 'question' && currentGroup[currentIndex] && !autoPlayedRef.current) {
       autoPlayedRef.current = true
       const timer = setTimeout(() => {
-        speakWord(currentGroup[currentIndex].content)
+        speakWord(currentGroup[currentIndex].content, dictData?.ukspeech || dictData?.usspeech)
       }, 300)
       return () => clearTimeout(timer)
     }
-  }, [state, currentIndex, currentGroup])
+  }, [state, currentIndex, currentGroup, dictData])
 
   // 预加载词典数据以获取音标
   useEffect(() => {
@@ -253,9 +254,9 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     if (state === 'show-answer' && currentGroup[currentIndex] && !autoPlayedRef.current) {
       autoPlayedRef.current = true
-      speakWord(currentGroup[currentIndex].content)
+      speakWord(currentGroup[currentIndex].content, dictData?.ukspeech || dictData?.usspeech)
     }
-  }, [state, currentIndex, currentGroup])
+  }, [state, currentIndex, currentGroup, dictData])
 
   const currentItem = currentGroup[currentIndex]
 
@@ -311,8 +312,99 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
                 </div>
               </button>
             )}
+            {totalCount > 0 && (
+              <button
+                onClick={() => {
+                  fetchReviewStats()
+                  setState('stats')
+                }}
+                className="w-full p-4 bg-purple-50 hover:bg-purple-100 rounded-xl text-left transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl">📊</span>
+                  <div>
+                    <p className="font-medium text-purple-800">查看复习进度</p>
+                    <p className="text-xs text-purple-600">艾宾浩斯记忆曲线统计</p>
+                  </div>
+                </div>
+              </button>
+            )}
           </div>
         )}
+      </div>
+    )
+  }
+
+  // 统计视图
+  if (state === 'stats') {
+    const totalWords = reviewStats?.reduce((acc, s) => acc + s.count, 0) || 0
+    const masteredCount = reviewStats?.find(s => s.stage === 6)?.count || 0
+    const masteryRate = totalWords > 0 ? Math.round((masteredCount / totalWords) * 100) : 0
+
+    return (
+      <div className="p-6">
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="text-lg font-bold text-gray-800">复习进度统计</h3>
+          <button onClick={() => setState('ready')} className="text-gray-400 hover:text-gray-600">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="bg-gradient-to-br from-purple-500 to-blue-600 rounded-2xl p-6 text-white mb-6 shadow-lg">
+          <div className="flex justify-between items-end">
+            <div>
+              <p className="text-purple-100 text-xs font-medium uppercase tracking-wider mb-1">掌握程度</p>
+              <p className="text-4xl font-bold">{masteryRate}%</p>
+            </div>
+            <div className="text-right">
+              <p className="text-purple-100 text-xs font-medium uppercase tracking-wider mb-1">已掌握单词</p>
+              <p className="text-2xl font-bold">{masteredCount} <span className="text-sm font-normal opacity-80">/ {totalWords}</span></p>
+            </div>
+          </div>
+          <div className="mt-4 h-2 bg-white/20 rounded-full overflow-hidden">
+            <div 
+              className="h-full bg-white transition-all duration-1000" 
+              style={{ width: `${masteryRate}%` }}
+            />
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <h4 className="text-sm font-bold text-gray-700 flex items-center gap-2">
+            <span className="w-1 h-4 bg-purple-500 rounded-full"></span>
+            艾宾浩斯记忆阶段分布
+          </h4>
+          <div className="space-y-3">
+            {reviewStats?.map((s) => {
+              const percentage = totalWords > 0 ? (s.count / totalWords) * 100 : 0
+              return (
+                <div key={s.stage} className="space-y-1">
+                  <div className="flex justify-between text-xs">
+                    <span className="text-gray-600 font-medium">{s.label}</span>
+                    <span className="text-gray-400">{s.count} 个</span>
+                  </div>
+                  <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                    <div 
+                      className={`h-full transition-all duration-500 ${
+                        s.stage === 6 ? 'bg-green-500' : s.stage === 0 ? 'bg-blue-400' : 'bg-purple-400'
+                      }`}
+                      style={{ width: `${percentage}%` }}
+                    />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+
+        <button
+          onClick={() => setState('ready')}
+          className="w-full mt-8 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium rounded-xl transition-colors"
+        >
+          返回
+        </button>
       </div>
     )
   }
@@ -347,7 +439,7 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
             <p className="text-lg text-blue-600 font-serif mb-3">{currentItem.phonetic || dictData?.phonetic}</p>
           )}
           <button
-            onClick={() => speakWord(currentItem.content)}
+            onClick={() => speakWord(currentItem.content, dictData?.ukspeech || dictData?.usspeech)}
             className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-blue-50 hover:bg-blue-100 text-blue-600 transition-colors"
             title="朗读单词"
           >
@@ -425,7 +517,7 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
                 )}
               </div>
               <button
-                onClick={() => speakWord(currentItem.content)}
+                onClick={() => speakWord(currentItem.content, dictData?.ukspeech || dictData?.usspeech)}
                 className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-blue-50 hover:bg-blue-100 text-blue-600 transition-colors"
                 title="朗读单词"
               >
@@ -672,6 +764,7 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
                 setSpellingAnswers({})
                 setSpellingResults({})
                 setSpellingSubmitted(false)
+                setCurrentSpellingIndex(0)
                 setState('spelling')
               }}
               className="w-full p-4 bg-red-50 hover:bg-red-100 rounded-xl text-left transition-colors"
@@ -691,6 +784,7 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
               setSpellingAnswers({})
               setSpellingResults({})
               setSpellingSubmitted(false)
+              setCurrentSpellingIndex(0)
               setState('spelling')
             }}
             className="w-full p-4 bg-blue-50 hover:bg-blue-100 rounded-xl text-left transition-colors"
@@ -726,11 +820,124 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
       ? (spellingMode === 'unknown' ? groupUnknownItems : currentGroup)
       : (spellingMode === 'unknown' ? unknownItems : allWords)
     
+    const currentSpellingItem = wordsToSpell[currentSpellingIndex]
+    const isLast = currentSpellingIndex === wordsToSpell.length - 1
+    const answer = spellingAnswers[currentSpellingItem?.id] || ''
+    const isCorrect = spellingResults[currentSpellingItem?.id]
+    const showResult = spellingResults[currentSpellingItem?.id] !== undefined
+
+    const handleCheck = () => {
+      const userAnswer = answer.trim().toLowerCase()
+      const correct = userAnswer === currentSpellingItem.content.toLowerCase()
+      setSpellingResults(prev => ({ ...prev, [currentSpellingItem.id]: correct }))
+      
+      // 如果正确，自动播放发音
+      if (correct) {
+        speakWord(currentSpellingItem.content)
+      }
+    }
+
+    const handleNextSpelling = () => {
+      if (isLast) {
+        setSpellingSubmitted(true)
+      } else {
+        setCurrentSpellingIndex(i => i + 1)
+      }
+    }
+
+    // 拼写测试完成后的总结视图
+    if (spellingSubmitted) {
+      const correctCount = Object.values(spellingResults).filter(Boolean).length
+      const totalCount = wordsToSpell.length
+      const accuracy = Math.round((correctCount / totalCount) * 100)
+
+      return (
+        <div className="p-6">
+          <div className="text-center mb-8">
+            <div className="inline-block p-4 bg-blue-50 rounded-full mb-4">
+              <span className="text-5xl">
+                {accuracy === 100 ? '🏆' : accuracy >= 80 ? '🌟' : accuracy >= 60 ? '👍' : '💪'}
+              </span>
+            </div>
+            <h3 className="text-2xl font-black text-gray-900">拼写测试完成</h3>
+            <p className="text-gray-500 mt-1">
+              {accuracy === 100 ? '完美！全部正确' : accuracy >= 80 ? '太棒了，继续保持' : accuracy >= 60 ? '表现不错，再接再厉' : '加油，多复习几次'}
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4 mb-8">
+            <div className="bg-blue-50 rounded-2xl p-4 text-center">
+              <p className="text-xs font-bold text-blue-400 uppercase tracking-wider mb-1">正确数</p>
+              <p className="text-3xl font-black text-blue-600">{correctCount} <span className="text-sm font-normal text-blue-300">/ {totalCount}</span></p>
+            </div>
+            <div className="bg-indigo-50 rounded-2xl p-4 text-center">
+              <p className="text-xs font-bold text-indigo-400 uppercase tracking-wider mb-1">正确率</p>
+              <p className="text-3xl font-black text-indigo-600">{accuracy}%</p>
+            </div>
+          </div>
+          
+          <div className="space-y-3 mb-8 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+            <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">错词回顾</p>
+            {wordsToSpell.map(item => {
+              const isCorrect = spellingResults[item.id]
+              return (
+                <div 
+                  key={item.id} 
+                  className={`flex items-center justify-between p-3 rounded-xl border-2 transition-all ${
+                    isCorrect ? 'border-green-50 bg-green-50/30' : 'border-red-50 bg-red-50/30'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <button 
+                      onClick={() => speakWord(item.content)}
+                      className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
+                        isCorrect ? 'bg-green-100 text-green-600 hover:bg-green-200' : 'bg-red-100 text-red-600 hover:bg-red-200'
+                      }`}
+                    >
+                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
+                      </svg>
+                    </button>
+                    <div>
+                      <p className={`font-bold ${isCorrect ? 'text-green-700' : 'text-red-700'}`}>{item.content}</p>
+                      <p className="text-xs text-gray-500 line-clamp-1">{item.meaning}</p>
+                    </div>
+                  </div>
+                  <span className="text-xl">{isCorrect ? '✅' : '❌'}</span>
+                </div>
+              )
+            })}
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              onClick={() => setState('ready')}
+              className="flex-1 py-3.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-2xl transition-all active:scale-95"
+            >
+              返回首页
+            </button>
+            <button
+              onClick={() => {
+                if (groupNumber < totalGroups) {
+                  startNextGroup()
+                } else {
+                  setState('all-complete')
+                }
+              }}
+              className="flex-[1.5] py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-2xl transition-all shadow-lg shadow-blue-200 active:scale-95"
+            >
+              {groupNumber < totalGroups ? '下一组复习' : '完成复习'}
+            </button>
+          </div>
+        </div>
+      )
+    }
+
     return (
       <div className="p-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-bold text-gray-800">
-            拼写测试{spellingMode === 'unknown' ? '（不认识的）' : '（全部）'}
+            拼写测试 ({currentSpellingIndex + 1}/{wordsToSpell.length})
           </h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -738,94 +945,81 @@ export default function ReviewMode({ onClose }: { onClose: () => void }) {
             </svg>
           </button>
         </div>
-        <p className="text-sm text-gray-500 mb-4">根据中文释义写出对应的英文单词</p>
 
-        <div className="space-y-4 max-h-[400px] overflow-y-auto">
-          {wordsToSpell.map((item, idx) => {
-            const answer = spellingAnswers[item.id] || ''
-            const isCorrect = spellingResults[item.id]
-            const showResult = spellingSubmitted && spellingResults[item.id] !== undefined
-
-            return (
-              <div
-                key={item.id}
-                className={`p-4 rounded-xl border-2 transition-colors ${
-                  showResult
-                    ? isCorrect
-                      ? 'border-green-200 bg-green-50'
-                      : 'border-red-200 bg-red-50'
-                    : 'border-gray-100 bg-gray-50'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-sm text-gray-700 font-medium">
-                    {idx + 1}. {item.meaning || '暂无释义'}
-                  </p>
-                  {showResult && (
-                    <span className={`text-xs font-bold ${isCorrect ? 'text-green-600' : 'text-red-600'}`}>
-                      {isCorrect ? '✓ 正确' : '✗ 错误'}
-                    </span>
-                  )}
-                </div>
-                <input
-                  type="text"
-                  value={answer}
-                  onChange={(e) => {
-                    if (!spellingSubmitted) {
-                      setSpellingAnswers(prev => ({ ...prev, [item.id]: e.target.value }))
-                    }
-                  }}
-                  disabled={spellingSubmitted}
-                  placeholder="输入英文单词..."
-                  className={`w-full px-3 py-2 rounded-lg border text-sm focus:outline-none focus:ring-2 ${
-                    showResult
-                      ? isCorrect
-                        ? 'border-green-300 bg-white focus:ring-green-200'
-                        : 'border-red-300 bg-white focus:ring-red-200'
-                      : 'border-gray-200 bg-white focus:ring-blue-200 focus:border-blue-400'
-                  }`}
-                />
-                {showResult && !isCorrect && (
-                  <p className="text-xs text-red-600 mt-1">
-                    正确答案：{item.content}
-                  </p>
-                )}
-              </div>
-            )
-          })}
+        {/* 进度条 */}
+        <div className="w-full h-1.5 bg-gray-100 rounded-full mb-8">
+          <div
+            className="h-full bg-amber-500 rounded-full transition-all"
+            style={{ width: `${((currentSpellingIndex + 1) / wordsToSpell.length) * 100}%` }}
+          />
         </div>
 
-        <div className="flex gap-3 mt-6">
-          {!spellingSubmitted ? (
+        <div className="bg-white border-2 border-amber-100 rounded-2xl p-8 text-center mb-6">
+          <p className="text-sm text-gray-500 mb-2">请拼写以下单词：</p>
+          <p className="text-xl font-bold text-gray-800 mb-6">{currentSpellingItem?.meaning}</p>
+          
+          <input
+            autoFocus
+            type="text"
+            value={answer}
+            onChange={(e) => {
+              if (!showResult) {
+                setSpellingAnswers(prev => ({ ...prev, [currentSpellingItem.id]: e.target.value }))
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                if (!showResult) handleCheck()
+                else handleNextSpelling()
+              }
+            }}
+            disabled={showResult}
+            placeholder="在此输入英文..."
+            className={`w-full px-4 py-3 text-center text-2xl font-bold rounded-xl border-2 transition-all focus:outline-none ${
+              showResult
+                ? isCorrect
+                  ? 'border-green-500 bg-green-50 text-green-700'
+                  : 'border-red-500 bg-red-50 text-red-700'
+                : 'border-gray-200 focus:border-amber-400 focus:ring-4 focus:ring-amber-100'
+            }`}
+          />
+
+          {showResult && (
+            <div className="mt-4 animate-in fade-in slide-in-from-top-2">
+              {isCorrect ? (
+                <p className="text-green-600 font-bold flex items-center justify-center gap-2">
+                  <span>✨</span> 太棒了！正确
+                </p>
+              ) : (
+                <div className="text-red-600">
+                  <p className="font-bold mb-1">✗ 拼写错误</p>
+                  <p className="text-2xl font-bold tracking-wider">{currentSpellingItem.content}</p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-3">
+          {!showResult ? (
             <button
-              onClick={() => {
-                const results: Record<number, boolean> = {}
-                wordsToSpell.forEach(item => {
-                  const userAnswer = (spellingAnswers[item.id] || '').trim().toLowerCase()
-                  results[item.id] = userAnswer === item.content.toLowerCase()
-                })
-                setSpellingResults(results)
-                setSpellingSubmitted(true)
-              }}
-              className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-colors"
+              onClick={handleCheck}
+              disabled={!answer.trim()}
+              className="w-full py-3 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-bold rounded-xl transition-colors shadow-lg shadow-amber-200"
             >
-              提交答案
+              检查答案
             </button>
           ) : (
-            <>
-              <button
-                onClick={onClose}
-                className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl transition-colors"
-              >
-                返回
-              </button>
-              <button
-                onClick={() => startReview('word')}
-                className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-colors"
-              >
-                再来一轮
-              </button>
-            </>
+            <button
+              onClick={handleNextSpelling}
+              className={`w-full py-3 font-bold rounded-xl transition-colors shadow-lg ${
+                isCorrect 
+                  ? 'bg-green-600 hover:bg-green-700 text-white shadow-green-200' 
+                  : 'bg-blue-600 hover:bg-blue-700 text-white shadow-blue-200'
+              }`}
+            >
+              {isLast ? '查看结果' : '下一个'}
+            </button>
           )}
         </div>
       </div>

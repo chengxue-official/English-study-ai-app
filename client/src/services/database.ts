@@ -1,9 +1,11 @@
-import initSqlJs, { Database } from 'sql.js'
 import localforage from 'localforage'
+import { downloadToOPFS } from './opfs'
+import { nativeDb } from './nativeDb'
 import { Capacitor } from '@capacitor/core'
+import { Filesystem, Directory } from '@capacitor/filesystem'
 
-// 词典条目接口
 export interface DictEntry {
+// ... (rest of the interface)
   word: string
   phonetic: string
   definition: string
@@ -28,14 +30,14 @@ export interface DictEntry {
 }
 
 class DatabaseService {
-  private dictDb: Database | null = null
-  private cacheDb: Database | null = null
-  private SQL: any = null
+  private worker: Worker | null = null
+  private messageId = 0
+  private resolves: Map<number, { resolve: Function; reject: Function }> = new Map()
   private isInitializing = false
   private initPromise: Promise<void> | null = null
+  private dictLoaded = false
 
   constructor() {
-    // 配置 localforage
     localforage.config({
       name: 'english-exam-app',
       storeName: 'database'
@@ -43,17 +45,56 @@ class DatabaseService {
   }
 
   /**
-   * 初始化数据库服务
+   * 向 Worker 发送消息并等待响应
    */
-  public async init(): Promise<void> {
-    if (this.initPromise) {
-      try {
-        await this.initPromise
-        return
-      } catch (e) {
-        console.warn('[DatabaseService] 之前的初始化失败，尝试重新初始化...')
-        this.initPromise = null
+  public async sendMessage(type: string, payload?: any): Promise<any> {
+    if (Capacitor.isNativePlatform()) {
+      // 原生平台不使用 Worker 消息机制，而是直接调用 nativeDb
+      // 这里为了兼容性，我们可以把一些通用的消息映射到 nativeDb 的方法
+      switch (type) {
+        case 'check_dict_exists':
+          // 先检查是否已加载，如果没加载则尝试加载（这会触发自动迁移）
+          if (await nativeDb.isDictLoaded()) return true;
+          return await nativeDb.tryLoadDict();
+        case 'query_dict':
+          return await nativeDb.query('dict', payload.sql, payload.bind);
+        case 'query_cache':
+          return await nativeDb.query('cache', payload.sql, payload.bind);
+        case 'exec_cache':
+          return await nativeDb.execute('cache', payload.sql, payload.bind);
+        case 'exec_cache_get_id':
+          return await nativeDb.executeGetId('cache', payload.sql, payload.bind);
+        case 'reload_dict':
+          return await nativeDb.tryLoadDict();
+        case 'import_dict':
+          await nativeDb.importDatabase('stardict', new Uint8Array(payload.buffer));
+          return true;
+        default:
+          throw new Error(`Unsupported message type on native: ${type}`);
       }
+    }
+
+    await this.init()
+    if (!this.worker) throw new Error('Worker not initialized')
+    return new Promise((resolve, reject) => {
+      const id = ++this.messageId
+      this.resolves.set(id, { resolve, reject })
+      this.worker!.postMessage({ id, type, payload })
+    })
+  }
+
+  public async init(): Promise<void> {
+    if (Capacitor.isNativePlatform()) {
+      if (this.initPromise) return this.initPromise;
+      this.initPromise = (async () => {
+        await nativeDb.init();
+        this.dictLoaded = await nativeDb.isDictLoaded();
+      })();
+      return this.initPromise;
+    }
+
+    if (this.initPromise) {
+      return this.initPromise
     }
 
     this.initPromise = (async () => {
@@ -61,74 +102,91 @@ class DatabaseService {
       this.isInitializing = true
 
       try {
-        console.log('[DatabaseService] 开始初始化 sql.js...')
-        const platform = Capacitor.getPlatform()
-        console.log(`[DatabaseService] 当前环境: ${platform}, URL: ${window.location.href}`)
+        console.log('[DatabaseService] Initializing worker...')
+        // 确保 URL 正确，Vite 会处理这个 URL
+        this.worker = new Worker(new URL('./dbWorker.ts', import.meta.url), { type: 'module' })
         
-        // 1. 尝试多个路径加载 WASM
-        const wasmPaths = [
-          '/sql-wasm.wasm',
-          'https://sql.js.org/dist/sql-wasm.wasm', // 官方 CDN 备选
-          'https://cdn.jsdelivr.net/npm/sql.js@1.12.0/dist/sql-wasm.wasm' // jsDelivr 备选
-        ]
-        
-        let wasmBinary: ArrayBuffer | undefined
-        for (const path of wasmPaths) {
-          try {
-            console.log(`[DatabaseService] 尝试从路径加载 WASM: ${path}`)
-            const wasmRes = await fetch(path)
-            if (wasmRes.ok) {
-              wasmBinary = await wasmRes.arrayBuffer()
-              console.log(`[DatabaseService] WASM 加载成功: ${path}, 大小: ${wasmBinary.byteLength}`)
-              break // 加载成功，跳出循环
+        this.worker.onmessage = (e) => {
+          const { id, type, result, error } = e.data
+          
+          // 处理初始化相关的消息
+          if (type === 'init_success') {
+            console.log('[DatabaseService] Worker reported init_success')
+            return
+          }
+          if (type === 'init_error') {
+            console.error('[DatabaseService] Worker reported init_error:', error)
+            return
+          }
+          
+          // 处理查询响应
+          if (id && this.resolves.has(id)) {
+            const { resolve, reject } = this.resolves.get(id)!
+            this.resolves.delete(id)
+            if (error) reject(new Error(error))
+            else resolve(result)
+          }
+        }
+
+        this.worker.onerror = (err) => {
+          console.error('[DatabaseService] Worker error:', err)
+        }
+
+        // 等待 Worker 初始化完成，增加超时处理
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            this.worker?.removeEventListener('message', handler)
+            reject(new Error('Worker initialization timeout (15s)'))
+          }, 15000)
+
+          const handler = (e: MessageEvent) => {
+            if (e.data.type === 'init_success') {
+              clearTimeout(timeout)
+              this.worker!.removeEventListener('message', handler)
+              resolve()
+            } else if (e.data.type === 'init_error') {
+              clearTimeout(timeout)
+              this.worker!.removeEventListener('message', handler)
+              reject(new Error(e.data.error))
             }
-          } catch (e) {
-            console.warn(`[DatabaseService] 路径 ${path} 加载失败，尝试下一个...`)
           }
-        }
+          this.worker!.addEventListener('message', handler)
+          this.worker!.postMessage({ type: 'init' })
+        })
 
-        if (!wasmBinary) {
-          throw new Error('无法加载 SQL.js WASM 引擎，请检查网络连接或确保 sql-wasm.wasm 已放置在 public 目录')
-        }
+        console.log('[DatabaseService] Worker initialized, checking dict...')
 
-        // 初始化 sql.js
-        this.SQL = await initSqlJs({
-          wasmBinary,
-          locateFile: (file) => {
-            if (file.endsWith('.wasm')) return '/sql-wasm.wasm'
-            return file 
-          }
+        // 检查词典是否存在 - 使用直接 postMessage 避免 sendMessage 递归调用 init
+        this.dictLoaded = await new Promise<boolean>((resolve, reject) => {
+          const id = ++this.messageId
+          console.log(`[DatabaseService] Sending check_dict_exists (id: ${id})`)
+          this.resolves.set(id, { 
+            resolve: (res: boolean) => {
+              console.log(`[DatabaseService] check_dict_exists resolved: ${res}`)
+              resolve(res)
+            }, 
+            reject: (err: any) => {
+              console.error(`[DatabaseService] check_dict_exists rejected:`, err)
+              reject(err)
+            } 
+          })
+          this.worker!.postMessage({ id, type: 'check_dict_exists' })
+          
+          // 为这个特定检查也增加超时
+          setTimeout(() => {
+            if (this.resolves.has(id)) {
+              console.warn(`[DatabaseService] check_dict_exists timeout (id: ${id})`)
+              this.resolves.delete(id)
+              reject(new Error('check_dict_exists timeout'))
+            }
+          }, 5000)
         })
         
-        if (!this.SQL) {
-          throw new Error('sql.js 初始化返回为空')
-        }
-        console.log('[DatabaseService] sql.js 初始化成功')
+        console.log('[DatabaseService] Dict loaded status:', this.dictLoaded)
 
-        // 2. 加载或创建用户缓存数据库 (cache.db)
-        await this.initCacheDb()
-
-        // 3. 尝试加载词典数据库 (stardict.db)
-        await this.initDictDb()
-
-        if (this.dictDb) {
-          try {
-            const testStmt = this.dictDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='stardict'")
-            if (testStmt.step()) {
-              console.log('[DatabaseService] 词典数据库验证成功: 找到 stardict 表')
-            } else {
-              console.error('[DatabaseService] 词典数据库验证失败: 未找到 stardict 表')
-            }
-            testStmt.free()
-          } catch (e) {
-            console.error('[DatabaseService] 词典数据库验证出错:', e)
-          }
-        }
-
-        console.log('[DatabaseService] 初始化完成')
-      } catch (err: any) {
-        console.error('[DatabaseService] 初始化失败:', err)
-        this.initPromise = null // 允许下次重试
+      } catch (err) {
+        console.error('[DatabaseService] Init failed:', err)
+        this.initPromise = null // 允许重试
         throw err
       } finally {
         this.isInitializing = false
@@ -139,265 +197,141 @@ class DatabaseService {
   }
 
   /**
-   * 辅助方法：确保数据为 Uint8Array
+   * 检查当前环境是否支持 OPFS
    */
-  private async ensureUint8Array(data: any): Promise<Uint8Array> {
-    if (!data) throw new Error('数据为空')
-    if (data instanceof Uint8Array) return data
-    if (data instanceof ArrayBuffer) return new Uint8Array(data)
-    if (data instanceof Blob) {
-      return new Uint8Array(await data.arrayBuffer())
-    }
-    // 某些环境下 localforage 可能会返回普通数组
-    if (Array.isArray(data)) return new Uint8Array(data)
-    throw new Error(`不支持的数据类型: ${typeof data}`)
+  public async isOpfsSupported(): Promise<boolean> {
+    if (Capacitor.isNativePlatform()) return true; // 原生平台我们认为总是支持（通过原生 SQLite）
+    return typeof navigator !== 'undefined' && !!navigator.storage && !!navigator.storage.getDirectory
   }
 
-  /**
-   * 辅助方法：检查是否为有效的 SQLite 数据库
-   */
-  private isSqlite(data: Uint8Array): boolean {
-    if (data.length < 16) return false
-    const header = String.fromCharCode(...data.slice(0, 15))
-    return header.startsWith('SQLite format 3')
-  }
-
-  /**
-   * 初始化缓存/用户数据数据库
-   */
-  private async initCacheDb(): Promise<void> {
-    try {
-      const rawData = await localforage.getItem('cache.db')
-      if (rawData) {
-        const savedDb = await this.ensureUint8Array(rawData)
-        if (this.isSqlite(savedDb)) {
-          this.cacheDb = new this.SQL.Database(savedDb)
-          console.log('[DatabaseService] 已从 localforage 加载 cache.db')
-        } else {
-          console.warn('[DatabaseService] 缓存的 cache.db 格式不正确，创建新的')
-          this.cacheDb = new this.SQL.Database()
-        }
-      } else {
-        this.cacheDb = new this.SQL.Database()
-        console.log('[DatabaseService] 创建全新的 cache.db')
-      }
-
-      // 创建表结构
-      this.cacheDb!.run(`
-        CREATE TABLE IF NOT EXISTS word_usage (
-          word TEXT PRIMARY KEY,
-          collocations TEXT,
-          phrases TEXT,
-          usage TEXT,
-          created_at INTEGER
-        )
-      `)
-
-      this.cacheDb!.run(`
-        CREATE TABLE IF NOT EXISTS sentence_analysis (
-          sentence_hash TEXT PRIMARY KEY,
-          sentence TEXT,
-          analysis TEXT,
-          created_at INTEGER
-        )
-      `)
-
-      // 检查表状态
-      try {
-        const countStmt = this.cacheDb!.prepare('SELECT COUNT(*) as count FROM sentence_analysis')
-        if (countStmt.step()) {
-          console.log(`[DatabaseService] sentence_analysis 表初始化完成，已有 ${countStmt.getAsObject().count} 条记录`)
-        }
-        countStmt.free()
-      } catch (e) {
-        console.warn('[DatabaseService] 检查 sentence_analysis 表状态失败:', e)
-      }
-
-      this.cacheDb!.run(`
-        CREATE TABLE IF NOT EXISTS word_context_cache (
-          cache_key TEXT PRIMARY KEY,
-          word TEXT,
-          result TEXT,
-          created_at INTEGER
-        )
-      `)
-
-      this.cacheDb!.run(`
-        CREATE TABLE IF NOT EXISTS collection (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          type TEXT NOT NULL,
-          content TEXT NOT NULL,
-          meaning TEXT,
-          source_sentence TEXT,
-          source_translation TEXT,
-          tags TEXT,
-          phonetic TEXT,
-          extra TEXT,
-          created_at INTEGER,
-          review_count INTEGER DEFAULT 0,
-          last_review_at INTEGER,
-          next_review_at INTEGER
-        )
-      `)
-
-      this.cacheDb!.run(`CREATE INDEX IF NOT EXISTS idx_collection_type ON collection(type)`)
-
-      // 保存一次以确保表结构持久化
-      await this.saveCacheDb()
-    } catch (err) {
-      console.error('[DatabaseService] 初始化 cache.db 失败:', err)
-      throw err
-    }
-  }
-
-  /**
-   * 保存缓存数据库到 localforage
-   */
-  private async saveCacheDb(): Promise<void> {
-    if (!this.cacheDb) return
-    try {
-      const data = this.cacheDb.export()
-      await localforage.setItem('cache.db', data)
-    } catch (err) {
-      console.error('[DatabaseService] 保存 cache.db 失败:', err)
-    }
-  }
-
-  /**
-   * 初始化词典数据库
-   */
-  private async initDictDb(): Promise<void> {
-    try {
-      // 检查本地 localforage 是否缓存了 stardict.db
-      const rawCached = await localforage.getItem('stardict.db')
-      if (rawCached) {
-        const cachedDict = await this.ensureUint8Array(rawCached)
-        if (this.isSqlite(cachedDict)) {
-          console.log(`[DatabaseService] 从缓存加载词典, 大小: ${cachedDict.length} bytes`)
-          this.dictDb = new this.SQL.Database(cachedDict)
-          console.log('[DatabaseService] 已从 localforage 加载 stardict.db')
-          return
-        } else {
-          console.warn('[DatabaseService] 缓存的 stardict.db 格式不正确，尝试重新下载')
-          await localforage.removeItem('stardict.db')
-        }
-      }
-
-      console.log('[DatabaseService] 本地未发现词典缓存，等待用户手动下载或导入')
-    } catch (err) {
-      console.error('[DatabaseService] 加载 stardict.db 过程中发生错误:', err)
-      // 不抛出错误，允许应用在无词典状态下启动
-    }
-  }
-
-  /**
-   * 从 Public 目录加载默认词典 (stardict.db)
-   */
   public async loadDictFromPublic(): Promise<void> {
     await this.init()
-    const dictUrl = '/stardict.db'
-    console.log(`[DatabaseService] 尝试从 Public 目录加载词典: ${dictUrl}`)
     
-    const res = await fetch(dictUrl)
-    if (!res.ok) {
-      throw new Error(`未找到默认词典文件 (${res.status})`)
-    }
+    if (this.dictLoaded) return
 
-    const buffer = await res.arrayBuffer()
-    const data = new Uint8Array(buffer)
-    
-    if (!this.isSqlite(data)) {
-      throw new Error('下载的文件不是有效的 SQLite 数据库格式')
-    }
-
-    await this.importDictDb(data)
-  }
-
-  /**
-   * 手动导入词典数据库
-   */
-  public async importDictDb(data: Uint8Array): Promise<void> {
-    console.log(`[DatabaseService] 开始导入词典, 数据大小: ${data.length} bytes`)
-    await this.init()
-    if (!this.SQL) throw new Error('SQL.js 未初始化')
-    
-    const validData = await this.ensureUint8Array(data)
-    if (!this.isSqlite(validData)) {
-      throw new Error('导入的文件不是有效的 SQLite 数据库格式')
-    }
-
-    if (this.dictDb) {
-      console.log('[DatabaseService] 关闭旧的词典数据库连接')
-      this.dictDb.close()
-    }
-
-    console.log('[DatabaseService] 正在创建新的 SQL.js 数据库实例...')
-    this.dictDb = new this.SQL.Database(validData)
-    
-    console.log('[DatabaseService] 正在保存词典到本地存储 (localforage)...')
-    await localforage.setItem('stardict.db', validData)
-    console.log('[DatabaseService] 成功导入并缓存 stardict.db')
-  }
-
-  /**
-   * 获取当前词典文件大小 (bytes)
-   */
-  public async getDictSize(): Promise<number> {
     try {
-      const rawCached = await localforage.getItem('stardict.db')
-      if (rawCached) {
-        const data = await this.ensureUint8Array(rawCached)
-        return data.length
+      console.log('[DatabaseService] Downloading dict...')
+      
+      const success = await downloadToOPFS('/stardict_full.db', 'stardict.db', (progress) => {
+        console.log(`[DatabaseService] Download progress: ${(progress * 100).toFixed(1)}%`)
+      })
+      
+      if (success) {
+        if (Capacitor.isNativePlatform()) {
+          // 在原生平台上，downloadToOPFS 已经将文件写入了 Directory.Data
+          // 我们只需要触发加载（这会触发自动迁移）
+          await nativeDb.tryLoadDict()
+        } else {
+          await this.sendMessage('reload_dict')
+        }
+        this.dictLoaded = await this.sendMessage('check_dict_exists')
+        console.log('[DatabaseService] Dict loaded:', this.dictLoaded)
+      } else {
+        throw new Error('Failed to download dict')
       }
     } catch (e) {
-      console.error('[DatabaseService] 获取词典大小失败:', e)
+      console.error('[DatabaseService] loadDictFromPublic failed:', e)
+      throw e
     }
-    return 0
+  }
+
+  public async importDictDb(data: Uint8Array): Promise<void> {
+    await this.init()
+    console.log(`[DatabaseService] Importing dict, size: ${data.length} bytes, platform: ${Capacitor.getPlatform()}`)
+    if (Capacitor.isNativePlatform()) {
+      try {
+        await nativeDb.importDatabase('stardict', data)
+      } catch (e: any) {
+        console.error('[DatabaseService] Native import failed:', e)
+        throw new Error(`原生导入失败: ${e.message || '未知错误'}`)
+      }
+    } else {
+      await this.sendMessage('import_dict', { buffer: data.buffer })
+    }
+    this.dictLoaded = await this.sendMessage('check_dict_exists')
+    console.log(`[DatabaseService] Import finished, dictLoaded: ${this.dictLoaded}`)
   }
 
   /**
-   * 检查词典是否已加载
+   * 内存安全地导入词典文件 (Blob/File)
    */
+  public async importDictFile(file: Blob, onProgress?: (prog: number) => void): Promise<void> {
+    await this.init()
+    console.log(`[DatabaseService] Importing dict file, size: ${file.size} bytes, platform: ${Capacitor.getPlatform()}`)
+    if (Capacitor.isNativePlatform()) {
+      try {
+        await nativeDb.importDatabaseFromBlob('stardict', file, onProgress)
+      } catch (e: any) {
+        console.error('[DatabaseService] Native file import failed:', e)
+        throw new Error(`原生导入失败: ${e.message || '未知错误'}`)
+      }
+    } else {
+      const buffer = await file.arrayBuffer()
+      await this.sendMessage('import_dict', { buffer })
+    }
+    this.dictLoaded = await this.sendMessage('check_dict_exists')
+    console.log(`[DatabaseService] File import finished, dictLoaded: ${this.dictLoaded}`)
+  }
+
+  public async getDictSize(): Promise<number> {
+    try {
+      if (Capacitor.isNativePlatform()) {
+        // 优先尝试通过 PRAGMA 获取已加载数据库的大小
+        const size = await nativeDb.getDatabaseSize('dict');
+        if (size > 0) return size;
+
+        // 如果没加载，尝试检查 files/ 目录下的临时文件
+        try {
+          const stat = await Filesystem.stat({
+            path: 'stardict.db',
+            directory: Directory.Data
+          });
+          return stat.size;
+        } catch (e) {}
+        return 0;
+      }
+      const root = await navigator.storage.getDirectory()
+      const fileHandle = await root.getFileHandle('stardict.db')
+      const file = await fileHandle.getFile()
+      return file.size
+    } catch (e) {
+      return 0
+    }
+  }
+
   public isDictLoaded(): boolean {
-    return !!this.dictDb
+    return this.dictLoaded
   }
 
   /**
-   * 查询单词
+   * 强制刷新词典加载状态
    */
+  public async refreshStatus(): Promise<boolean> {
+    await this.init()
+    this.dictLoaded = await this.sendMessage('check_dict_exists')
+    return this.dictLoaded
+  }
+
   public async queryWord(word: string): Promise<{ found: boolean; data?: DictEntry; word: string }> {
     await this.init()
-    if (!this.dictDb) {
-      return { found: false, word }
-    }
+    if (!this.dictLoaded) return { found: false, word }
 
     const cleaned = word.toLowerCase().trim()
     if (!cleaned) return { found: false, word }
 
-    // 1. 精确查询
-    let stmt = this.dictDb.prepare(
-      'SELECT word, phonetic, definition, translation, pos, collins, oxford, tag, bnc, frq, exchange FROM stardict WHERE word = ?'
-    )
-    stmt.bind([cleaned])
-    
-    if (stmt.step()) {
-      const row = stmt.getAsObject() as any
-      stmt.free()
-      return { found: true, data: this.formatDictEntry(row), word: cleaned }
-    }
-    stmt.free()
+    const rows = await this.sendMessage('query_dict', {
+      sql: 'SELECT word, phonetic, definition, translation, pos, collins, oxford, tag, bnc, frq, exchange FROM stardict WHERE word = ?',
+      bind: [cleaned]
+    })
 
-    // 2. 模糊查询：尝试查找词的原型（如 running -> run）
-    stmt = this.dictDb.prepare(
-      'SELECT word, phonetic, definition, translation, pos, collins, oxford, tag, bnc, frq, exchange FROM stardict WHERE exchange LIKE ? LIMIT 5'
-    )
-    stmt.bind([`%${cleaned}%`])
-
-    const fuzzyRows: any[] = []
-    while (stmt.step()) {
-      fuzzyRows.push(stmt.getAsObject())
+    if (rows.length > 0) {
+      return { found: true, data: this.formatDictEntry(rows[0]), word: cleaned }
     }
-    stmt.free()
+
+    const fuzzyRows = await this.sendMessage('query_dict', {
+      sql: 'SELECT word, phonetic, definition, translation, pos, collins, oxford, tag, bnc, frq, exchange FROM stardict WHERE exchange LIKE ? LIMIT 5',
+      bind: [`%${cleaned}%`]
+    })
 
     if (fuzzyRows.length > 0) {
       for (const row of fuzzyRows) {
@@ -414,9 +348,6 @@ class DatabaseService {
     return { found: false, word: cleaned }
   }
 
-  /**
-   * 格式化词典条目
-   */
   private formatDictEntry(row: any): DictEntry {
     const exchangeMap: Record<string, string[]> = {}
     if (row.exchange) {
@@ -459,22 +390,12 @@ class DatabaseService {
     }
   }
 
-  /**
-   * 音标规范化
-   */
   private normalizePhonetic(phonetic: string | null): string {
     if (!phonetic || phonetic.trim() === '') return ''
     let ipa = phonetic.trim()
     const replacements: [string, string][] = [
-      ["'", 'ˈ'],
-      [',', 'ˌ'],
-      [':', 'ː'],
-      ['ә', 'ə'],
-      ['A', 'eɪ'],
-      ['E', 'iː'],
-      ['I', 'aɪ'],
-      ['U', 'uː'],
-      ['O', 'əʊ'],
+      ["'", 'ˈ'], [',', 'ˌ'], [':', 'ː'], ['ә', 'ə'],
+      ['A', 'eɪ'], ['E', 'iː'], ['I', 'aɪ'], ['U', 'uː'], ['O', 'əʊ'],
     ]
     for (const [from, to] of replacements) {
       ipa = ipa.split(from).join(to)
@@ -482,160 +403,84 @@ class DatabaseService {
     return `/${ipa}/`
   }
 
-  // ==================== 缓存与用户数据操作 ====================
-
-  /**
-   * 获取单词用法缓存
-   */
   public async getWordUsage(word: string): Promise<any | null> {
     await this.init()
-    if (!this.cacheDb) return null
-
-    const stmt = this.cacheDb!.prepare('SELECT collocations, phrases, usage FROM word_usage WHERE word = ?')
-    stmt.bind([word.toLowerCase().trim()])
-    if (stmt.step()) {
-      const row = stmt.getAsObject() as any
-      stmt.free()
+    const rows = await this.sendMessage('query_cache', {
+      sql: 'SELECT collocations, phrases, usage FROM word_usage WHERE word = ?',
+      bind: [word.toLowerCase().trim()]
+    })
+    if (rows.length > 0) {
       return {
-        collocations: JSON.parse(row.collocations || '[]'),
-        phrases: JSON.parse(row.phrases || '[]'),
-        usage: JSON.parse(row.usage || '[]'),
+        collocations: JSON.parse(rows[0].collocations || '[]'),
+        phrases: JSON.parse(rows[0].phrases || '[]'),
+        usage: JSON.parse(rows[0].usage || '[]'),
       }
     }
-    stmt.free()
     return null
   }
 
-  /**
-   * 保存单词用法缓存
-   */
   public async saveWordUsage(word: string, data: { collocations: any[]; phrases: any[]; usage: any[] }): Promise<void> {
     await this.init()
-    if (!this.cacheDb) return
-
-    this.cacheDb!.run(
-      'INSERT OR REPLACE INTO word_usage (word, collocations, phrases, usage, created_at) VALUES (?, ?, ?, ?, ?)',
-      [
-        word.toLowerCase().trim(),
-        JSON.stringify(data.collocations),
-        JSON.stringify(data.phrases),
-        JSON.stringify(data.usage),
-        Date.now()
-      ]
-    )
-    await this.saveCacheDb()
+    await this.sendMessage('exec_cache', {
+      sql: 'INSERT OR REPLACE INTO word_usage (word, collocations, phrases, usage, created_at) VALUES (?, ?, ?, ?, ?)',
+      bind: [word.toLowerCase().trim(), JSON.stringify(data.collocations), JSON.stringify(data.phrases), JSON.stringify(data.usage), Date.now()]
+    })
   }
 
-  /**
-   * 获取上下文释义缓存
-   */
   public async getWordContext(cacheKey: string): Promise<any | null> {
     await this.init()
-    if (!this.cacheDb) return null
-
-    const stmt = this.cacheDb!.prepare('SELECT result FROM word_context_cache WHERE cache_key = ?')
-    stmt.bind([cacheKey])
-    if (stmt.step()) {
-      const row = stmt.getAsObject() as any
-      stmt.free()
-      return JSON.parse(row.result)
-    }
-    stmt.free()
+    const rows = await this.sendMessage('query_cache', {
+      sql: 'SELECT result FROM word_context_cache WHERE cache_key = ?',
+      bind: [cacheKey]
+    })
+    if (rows.length > 0) return JSON.parse(rows[0].result)
     return null
   }
 
-  /**
-   * 保存上下文释义缓存
-   */
   public async saveWordContext(cacheKey: string, word: string, result: any): Promise<void> {
     await this.init()
-    if (!this.cacheDb) return
-
-    this.cacheDb!.run(
-      'INSERT OR REPLACE INTO word_context_cache (cache_key, word, result, created_at) VALUES (?, ?, ?, ?)',
-      [cacheKey, word.toLowerCase().trim(), JSON.stringify(result), Date.now()]
-    )
-    await this.saveCacheDb()
+    await this.sendMessage('exec_cache', {
+      sql: 'INSERT OR REPLACE INTO word_context_cache (cache_key, word, result, created_at) VALUES (?, ?, ?, ?)',
+      bind: [cacheKey, word.toLowerCase().trim(), JSON.stringify(result), Date.now()]
+    })
   }
 
-  /**
-   * 获取句子分析缓存
-   */
   public async getSentenceAnalysis(sentenceHash: string): Promise<any | null> {
     await this.init()
-    if (!this.cacheDb) return null
-
-    try {
-      const stmt = this.cacheDb!.prepare('SELECT analysis FROM sentence_analysis WHERE sentence_hash = ?')
-      stmt.bind([sentenceHash])
-      if (stmt.step()) {
-        const row = stmt.getAsObject() as any
-        stmt.free()
-        const result = JSON.parse(row.analysis)
-        console.log(`[DatabaseService] 命中缓存: ${sentenceHash}`)
-        return result
-      }
-      stmt.free()
-      console.log(`[DatabaseService] 未命中缓存: ${sentenceHash}`)
-    } catch (err) {
-      console.error('[DatabaseService] getSentenceAnalysis 失败:', err)
-    }
+    const rows = await this.sendMessage('query_cache', {
+      sql: 'SELECT analysis FROM sentence_analysis WHERE sentence_hash = ?',
+      bind: [sentenceHash]
+    })
+    if (rows.length > 0) return JSON.parse(rows[0].analysis)
     return null
   }
 
-  /**
-   * 保存句子分析缓存
-   */
-  public async saveSentenceAnalysis(sentenceHash: string, sentence: string, analysis: any, skipSave: boolean = false): Promise<void> {
+  public async saveSentenceAnalysis(sentenceHash: string, sentence: string, analysis: any, _skipSave: boolean = false): Promise<void> {
     await this.init()
-    if (!this.cacheDb) return
-
-    try {
-      this.cacheDb!.run(
-        'INSERT OR REPLACE INTO sentence_analysis (sentence_hash, sentence, analysis, created_at) VALUES (?, ?, ?, ?)',
-        [sentenceHash, sentence, JSON.stringify(analysis), Date.now()]
-      )
-      if (!skipSave) {
-        await this.saveCacheDb()
-      }
-      console.log(`[DatabaseService] 已保存句子分析缓存: ${sentenceHash.slice(0, 30)}... (skipSave=${skipSave})`)
-    } catch (err) {
-      console.error('[DatabaseService] saveSentenceAnalysis 失败:', err)
-    }
+    await this.sendMessage('exec_cache', {
+      sql: 'INSERT OR REPLACE INTO sentence_analysis (sentence_hash, sentence, analysis, created_at) VALUES (?, ?, ?, ?)',
+      bind: [sentenceHash, sentence, JSON.stringify(analysis), Date.now()]
+    })
   }
 
-  /**
-   * 强制保存缓存数据库
-   */
   public async forceSaveCacheDb(): Promise<void> {
-    await this.saveCacheDb()
+    // OPFS is auto-saved
   }
 
-  /**
-   * 删除句子分析缓存
-   */
   public async deleteSentenceAnalysis(sentenceHash: string): Promise<void> {
     await this.init()
-    if (!this.cacheDb) return
-
-    this.cacheDb!.run('DELETE FROM sentence_analysis WHERE sentence_hash = ?', [sentenceHash])
-    await this.saveCacheDb()
+    await this.sendMessage('exec_cache', {
+      sql: 'DELETE FROM sentence_analysis WHERE sentence_hash = ?',
+      bind: [sentenceHash]
+    })
   }
 
-  /**
-   * 扫描词组 (本地匹配)
-   */
   public async scanPhrases(text: string): Promise<any[]> {
-    console.log(`[DatabaseService] scanPhrases 开始, 文本长度: ${text.length}`)
     await this.init()
-    if (!this.dictDb) {
-      console.warn('[DatabaseService] scanPhrases 失败: dictDb 未加载')
-      return []
-    }
+    if (!this.dictLoaded) return []
 
     const cleanText = text.replace(/[^a-zA-Z\s'-]/g, ' ').replace(/\s+/g, ' ').trim()
     const words = cleanText.split(' ').filter(w => w.length > 0)
-    console.log(`[DatabaseService] scanPhrases 分词完成, 单词数: ${words.length}`)
     const foundPhrases: any[] = []
     const matchedSet = new Set<string>()
 
@@ -646,20 +491,19 @@ class DatabaseService {
         if (overlap) continue
         if (matchedSet.has(ngram)) continue
 
-        const stmt = this.dictDb.prepare('SELECT word, translation FROM stardict WHERE word = ?')
-        stmt.bind([ngram])
-        if (stmt.step()) {
-          const row = stmt.getAsObject() as any
+        const rows = await this.sendMessage('query_dict', {
+          sql: 'SELECT word, translation FROM stardict WHERE word = ?',
+          bind: [ngram]
+        })
+
+        if (rows.length > 0) {
+          const row = rows[0]
           if (row.translation && /[\u4e00-\u9fff]/.test(row.translation)) {
-            // 2词组合实词过滤
             if (n === 2) {
               const contentWords = words.slice(i, i + n).filter(
                 w => !/^(a|an|the|to|of|in|on|at|for|with|by|from|as|is|am|are|was|were|be|been|being|do|does|did|have|has|had|it|he|she|we|they|this|that|these|those|and|but|or|so|if|not|no|up|out|off)$/i.test(w)
               )
-              if (contentWords.length < 2) {
-                stmt.free()
-                continue
-              }
+              if (contentWords.length < 2) continue
             }
 
             matchedSet.add(ngram)
@@ -672,20 +516,13 @@ class DatabaseService {
             })
           }
         }
-        stmt.free()
       }
     }
 
     foundPhrases.sort((a, b) => a.startIndex - b.startIndex)
-    console.log(`[DatabaseService] scanPhrases 完成, 找到词组: ${foundPhrases.length}`)
     return foundPhrases
   }
 
-  // ==================== 收藏本 CRUD ====================
-
-  /**
-   * 获取收藏列表
-   */
   public async getCollectionItems(params: {
     page: number
     pageSize: number
@@ -695,7 +532,6 @@ class DatabaseService {
     dueReview?: boolean
   }): Promise<{ items: any[]; total: number }> {
     await this.init()
-    if (!this.cacheDb) return { items: [], total: 0 }
 
     let query = 'SELECT * FROM collection WHERE 1=1'
     const args: any[] = []
@@ -717,50 +553,34 @@ class DatabaseService {
       args.push(Date.now())
     }
 
-    // 获取总数
-    let countQuery = query.replace('SELECT *', 'SELECT COUNT(*) as count')
-    let stmt = this.cacheDb!.prepare(countQuery)
-    stmt.bind(args)
-    let total = 0
-    if (stmt.step()) {
-      total = (stmt.getAsObject() as any).count
-    }
-    stmt.free()
+    const countQuery = query.replace('SELECT *', 'SELECT COUNT(*) as count')
+    const countRows = await this.sendMessage('query_cache', { sql: countQuery, bind: args })
+    const total = countRows.length > 0 ? countRows[0].count : 0
 
-    // 分页查询
     query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?'
     const limit = params.pageSize
     const offset = (params.page - 1) * params.pageSize
-    stmt = this.cacheDb!.prepare(query)
-    stmt.bind([...args, limit, offset])
+    const rows = await this.sendMessage('query_cache', { sql: query, bind: [...args, limit, offset] })
 
-    const items: any[] = []
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as any
-      items.push({
-        id: row.id,
-        type: row.type,
-        content: row.content,
-        meaning: row.meaning,
-        sourceSentence: row.source_sentence,
-        sourceTranslation: row.source_translation,
-        tags: row.tags ? JSON.parse(row.tags) : [],
-        phonetic: row.phonetic,
-        extra: row.extra ? JSON.parse(row.extra) : null,
-        createdAt: row.created_at,
-        reviewCount: row.review_count,
-        lastReviewAt: row.last_review_at,
-        nextReviewAt: row.next_review_at,
-      })
-    }
-    stmt.free()
+    const items = rows.map((row: any) => ({
+      id: row.id,
+      type: row.type,
+      content: row.content,
+      meaning: row.meaning,
+      sourceSentence: row.source_sentence,
+      sourceTranslation: row.source_translation,
+      tags: row.tags ? JSON.parse(row.tags) : [],
+      phonetic: row.phonetic,
+      extra: row.extra ? JSON.parse(row.extra) : null,
+      createdAt: row.created_at,
+      reviewCount: row.review_count,
+      lastReviewAt: row.last_review_at,
+      nextReviewAt: row.next_review_at,
+    }))
 
     return { items, total }
   }
 
-  /**
-   * 添加收藏
-   */
   public async addCollection(item: {
     type: string
     content: string
@@ -772,178 +592,122 @@ class DatabaseService {
     extra?: any
   }): Promise<{ id: number; createdAt: number }> {
     await this.init()
-    if (!this.cacheDb) throw new Error('数据库未加载')
-
     const cleanedContent = item.content.toLowerCase().trim()
 
-    // 检查是否已存在，防止重复添加
     const existingId = await this.checkCollected(item.type, cleanedContent)
     if (existingId !== null) {
-      console.log('[DatabaseService] addCollection: Item already exists with id:', existingId)
-      const stmt = this.cacheDb!.prepare('SELECT created_at FROM collection WHERE id = ?')
-      stmt.bind([existingId])
-      let createdAt = Date.now()
-      if (stmt.step()) {
-        createdAt = (stmt.getAsObject() as any).created_at
-      }
-      stmt.free()
-      return { id: existingId, createdAt }
+      const rows = await this.sendMessage('query_cache', {
+        sql: 'SELECT created_at FROM collection WHERE id = ?',
+        bind: [existingId]
+      })
+      return { id: existingId, createdAt: rows.length > 0 ? rows[0].created_at : Date.now() }
     }
 
     const createdAt = Date.now()
-    try {
-      this.cacheDb!.run(
-        `INSERT INTO collection (type, content, meaning, source_sentence, source_translation, tags, phonetic, extra, created_at, review_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-        [
-          item.type,
-          cleanedContent,
-          item.meaning || null,
-          item.sourceSentence || null,
-          item.sourceTranslation || null,
-          item.tags ? JSON.stringify(item.tags) : '[]',
-          item.phonetic || null,
-          item.extra ? JSON.stringify(item.extra) : null,
-          createdAt
-        ]
-      )
-      await this.saveCacheDb()
+    const id = await this.sendMessage('exec_cache_get_id', {
+      sql: `INSERT INTO collection (type, content, meaning, source_sentence, source_translation, tags, phonetic, extra, created_at, review_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      bind: [
+        item.type, cleanedContent, item.meaning || null, item.sourceSentence || null,
+        item.sourceTranslation || null, item.tags ? JSON.stringify(item.tags) : '[]',
+        item.phonetic || null, item.extra ? JSON.stringify(item.extra) : null, createdAt
+      ]
+    })
 
-      // 获取自增ID
-      const stmt = this.cacheDb!.prepare('SELECT last_insert_rowid() as id')
-      stmt.step()
-      const id = (stmt.getAsObject() as any).id
-      stmt.free()
-      
-      console.log('[DatabaseService] addCollection: Inserted new item, last_insert_rowid:', id)
-      
-      // 如果 id 仍然是 0，尝试通过查询获取最新插入的 ID
-      if (id === 0) {
-        console.warn('[DatabaseService] last_insert_rowid returned 0, trying fallback query...')
-        const fallbackStmt = this.cacheDb!.prepare('SELECT id FROM collection WHERE type = ? AND content = ? ORDER BY id DESC LIMIT 1')
-        fallbackStmt.bind([item.type, cleanedContent])
-        let fallbackId = 0
-        if (fallbackStmt.step()) {
-          fallbackId = (fallbackStmt.getAsObject() as any).id
-        }
-        fallbackStmt.free()
-        console.log('[DatabaseService] Fallback ID found:', fallbackId)
-        return { id: fallbackId, createdAt }
-      }
-
-      return { id, createdAt }
-    } catch (err) {
-      console.error('[DatabaseService] addCollection failed:', err)
-      throw err
-    }
+    return { id, createdAt }
   }
 
-  /**
-   * 移除收藏
-   */
   public async removeCollection(id: number): Promise<void> {
     await this.init()
-    if (!this.cacheDb) return
-
-    this.cacheDb!.run('DELETE FROM collection WHERE id = ?', [id])
-    await this.saveCacheDb()
+    await this.sendMessage('exec_cache', {
+      sql: 'DELETE FROM collection WHERE id = ?',
+      bind: [id]
+    })
   }
 
-  /**
-   * 检查是否已收藏，返回 ID 或 null
-   */
   public async checkCollected(type: string, content: string): Promise<number | null> {
     await this.init()
-    if (!this.cacheDb) return null
-
     const cleanedContent = content.toLowerCase().trim()
-    const stmt = this.cacheDb!.prepare('SELECT id FROM collection WHERE type = ? AND content = ?')
-    stmt.bind([type, cleanedContent])
-    let id: number | null = null
-    if (stmt.step()) {
-      id = (stmt.getAsObject() as any).id
-    }
-    stmt.free()
-    return id
+    const rows = await this.sendMessage('query_cache', {
+      sql: 'SELECT id FROM collection WHERE type = ? AND content = ?',
+      bind: [type, cleanedContent]
+    })
+    return rows.length > 0 ? rows[0].id : null
   }
 
-  /**
-   * 获取收藏统计
-   */
   public async getCollectionStats(): Promise<{ total: number; byType: Record<string, number> }> {
     await this.init()
-    if (!this.cacheDb) return { total: 0, byType: {} }
-
     const stats = { total: 0, byType: {} as Record<string, number> }
     
-    let stmt = this.cacheDb!.prepare('SELECT COUNT(*) as count FROM collection')
-    if (stmt.step()) {
-      stats.total = (stmt.getAsObject() as any).count
-    }
-    stmt.free()
+    const totalRows = await this.sendMessage('query_cache', { sql: 'SELECT COUNT(*) as count FROM collection' })
+    if (totalRows.length > 0) stats.total = totalRows[0].count
 
-    stmt = this.cacheDb!.prepare('SELECT type, COUNT(*) as count FROM collection GROUP BY type')
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as any
+    const typeRows = await this.sendMessage('query_cache', { sql: 'SELECT type, COUNT(*) as count FROM collection GROUP BY type' })
+    for (const row of typeRows) {
       stats.byType[row.type] = row.count
     }
-    stmt.free()
 
     return stats
   }
 
-  /**
-   * 更新复习进度 (艾宾浩斯记忆曲线)
-   */
   public async updateReview(id: number, known: boolean): Promise<{ success: boolean; nextReviewAt?: number; days?: number }> {
     await this.init()
-    if (!this.cacheDb) return { success: false }
+    const rows = await this.sendMessage('query_cache', {
+      sql: 'SELECT review_count FROM collection WHERE id = ?',
+      bind: [id]
+    })
+    if (rows.length === 0) return { success: false }
 
-    const stmt = this.cacheDb!.prepare('SELECT review_count FROM collection WHERE id = ?')
-    stmt.bind([id])
-    if (!stmt.step()) {
-      stmt.free()
-      return { success: false }
-    }
-    const row = stmt.getAsObject() as any
-    stmt.free()
-
-    let reviewCount = row.review_count || 0
+    let reviewCount = rows[0].review_count || 0
     let days = 1
 
     if (known) {
       reviewCount += 1
-      // 艾宾浩斯复习间隔天数: 1, 2, 4, 7, 15, 30
       const intervals = [1, 2, 4, 7, 15, 30]
       days = intervals[Math.min(reviewCount - 1, intervals.length - 1)]
     } else {
-      // 不认识，重置复习次数，间隔设为1天
       reviewCount = 0
       days = 1
     }
 
     const nextReviewAt = Date.now() + days * 24 * 60 * 60 * 1000
-    this.cacheDb!.run(
-      'UPDATE collection SET review_count = ?, last_review_at = ?, next_review_at = ? WHERE id = ?',
-      [reviewCount, Date.now(), nextReviewAt, id]
-    )
-    await this.saveCacheDb()
+    await this.sendMessage('exec_cache', {
+      sql: 'UPDATE collection SET review_count = ?, last_review_at = ?, next_review_at = ? WHERE id = ?',
+      bind: [reviewCount, Date.now(), nextReviewAt, id]
+    })
 
     return { success: true, nextReviewAt, days }
   }
 
-  /**
-   * 提前复习
-   */
+  public async getReviewStats(): Promise<{ stage: number; count: number; label: string }[]> {
+    await this.init()
+    const stageLabels = ['新学习', '1天后', '2天后', '4天后', '7天后', '15后', '30天后']
+    const statsMap: Record<number, number> = {}
+    
+    const rows = await this.sendMessage('query_cache', {
+      sql: 'SELECT review_count, COUNT(*) as count FROM collection WHERE type = "word" GROUP BY review_count'
+    })
+    
+    for (const row of rows) {
+      const rc = row.review_count || 0
+      const count = row.count || 0
+      const stage = Math.min(rc, 6)
+      statsMap[stage] = (statsMap[stage] || 0) + count
+    }
+
+    return stageLabels.map((label, stage) => ({
+      stage,
+      label,
+      count: statsMap[stage] || 0
+    }))
+  }
+
   public async advanceReview(id: number): Promise<boolean> {
     await this.init()
-    if (!this.cacheDb) return false
-
-    this.cacheDb!.run(
-      'UPDATE collection SET next_review_at = ? WHERE id = ?',
-      [Date.now(), id]
-    )
-    await this.saveCacheDb()
+    await this.sendMessage('exec_cache', {
+      sql: 'UPDATE collection SET next_review_at = ? WHERE id = ?',
+      bind: [Date.now(), id]
+    })
     return true
   }
 }

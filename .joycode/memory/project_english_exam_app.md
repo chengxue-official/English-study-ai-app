@@ -4,17 +4,24 @@ description: 高中英语应试App项目状态和技术架构
 type: project
 ---
 
-## 项目状态 (2026-07-12)
+## 项目状态 (2026-07-24)
+
+### 当前版本: 0.1.2
+- **核心修复**: 解决 1.1GB 词典导入 OOM 问题。
+- **技术实现**: `Blob.slice` 分块读取 + 原生 SQLite 迁移。
+- **稳定性**: 增加多名称探测、重试机制及深度诊断。
 
 ### 已完成功能
-1. **文章导入与翻译** - 粘贴文本导入、双栏展示(原文+译文)、段落自动分割、翻译缓存、API配置界面(模型/密钥/端点)
-2. **单词点击查询** - ECDICT词典(340万词条SQLite)、ClickableText组件、WordPopup弹窗(音标/释义/词形变化/考试标签/柯林斯星级/牛津3000)、词形反查(running→run)
+1. **文章翻译**: 粘贴导入、双栏展示、API 配置。
+2. **单词查询**: ECDICT 词典、ClickableText、WordPopup。
+3. **原生迁移**: 迁移至 Capacitor SQLite，支持超大文件。
+4. **复习系统**: 艾宾浩斯曲线、拼写测试、音标发音。
 
 ### 技术架构
-- **前端**: React + Vite + TypeScript + Zustand + Tailwind CSS (port 5173)
-- **后端**: Node.js + Express + TypeScript (port 3001)
-- **词典**: ECDICT stardict.db (851MB, 340万词条) + better-sqlite3
-- **翻译**: OpenAI兼容API接口
+- **前端**: React + Vite + TS + Zustand + Tailwind。
+- **原生**: Capacitor + SQLite + Filesystem。
+- **词典**: ECDICT (2.4MB/1.1GB)。
+- **热更新**: 支持逻辑层热更新。
 
 ### 关键文件
 - `server/server.ts` - 后端主文件(翻译+词典API)

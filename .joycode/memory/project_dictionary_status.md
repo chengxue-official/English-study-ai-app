@@ -4,11 +4,11 @@ description: 词典资源状态与 Ultimate 版转换记录
 type: project
 ---
 
-- **Ultimate 版词典**: 已成功从 `skywind3000/ECDICT-ultimate` 转换。
-- **数据量**: 4,324,664 条词目。
-- **文件大小**: 616.26 MB (已从项目目录移除，改为按需下载或手动导入)。
-- **存储策略**: 为了精简项目体积，Ultimate 版词典不再随包分发。用户可通过 `DictionaryManager` 从云端下载或手动导入。
-- **本地保留**: 仅保留精简版 (`stardict.db`, 2.4MB) 用于基础离线功能。
-- **转换日期**: 2026-07-20。
-- **技术细节**: 使用 Node.js 流式解析 CSV 并通过 SQLite 批量事务写入，解决了 358MB CSV 导致的 OOM 问题。
-- **前端适配**: `DictionaryManager.tsx` 已更新，支持下载和手动导入 Ultimate 版。
+- **Ultimate 版词典**: 已成功部署至本地开发环境。
+- **数据量**: 4,324,665 条词目。
+- **文件大小**: 1.13 GB (解压后)。
+- **存储路径**: `client/public/stardict_full.db`。
+- **部署状态**: 2026-07-23 完成。已通过 PowerShell 解压并移动至静态资源目录。
+- **前端适配**: `database.ts` 会优先尝试加载 `/stardict_full.db`。`DictionaryManager.tsx` 已支持识别并下载该文件。
+- **性能验证**: 已通过 Node.js 脚本验证数据库完整性，查询响应正常。
+- **内存建议**: 1.1GB 数据库在浏览器中加载会占用大量内存 (ArrayBuffer)，建议在 8GB+ 内存的设备上使用，或考虑使用 IndexedDB 分片存储（待优化）。
