@@ -1,6 +1,6 @@
 import { Capacitor } from '@capacitor/core';
 import { SQLiteConnection, SQLiteDBConnection, CapacitorSQLite } from '@capacitor-community/sqlite';
-import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { logger } from './logger';
 
 class NativeDatabaseService {
@@ -127,6 +127,12 @@ class NativeDatabaseService {
         directory: Directory.Data
       });
       logger.info(`[NativeDb] Files in Directory.Data: ${result.files.map(f => f.name).join(', ')}`);
+      
+      const uri = await Filesystem.getUri({
+        path: '',
+        directory: Directory.Data
+      });
+      logger.info(`[NativeDb] Directory.Data URI: ${uri.uri}`);
     } catch (e: any) {
       logger.error(`[NativeDb] Failed to list Directory.Data: ${e.message}`);
     }
@@ -138,45 +144,74 @@ class NativeDatabaseService {
     try {
       await this.listDataDirectory();
       
-      const fileName = `${dbName}.db`;
-      try {
-        const stat = await Filesystem.stat({
-          path: fileName,
-          directory: Directory.Data
-        });
-        logger.info(`[NativeDb] Source file ${fileName} size: ${stat.size}`);
-      } catch (e) {
-        logger.warn(`[NativeDb] Source file ${fileName} not found before move`);
+      const possibleSourceFiles = [`${dbName}.db`, dbName];
+      let actualSourceFile = '';
+      
+      for (const f of possibleSourceFiles) {
+        try {
+          const stat = await Filesystem.stat({
+            path: f,
+            directory: Directory.Data
+          });
+          logger.info(`[NativeDb] Found source file: ${f}, size: ${stat.size}`);
+          actualSourceFile = f;
+          break;
+        } catch (e) {}
       }
 
-      logger.info(`[NativeDb] Moving ${dbName} from files/ to databases/...`);
-      
-      // moveDatabasesAndAddSuffix 会将文件从 Directory.Data 移动到插件私有目录
-      // 并且会自动添加 .db 后缀（如果原本没有）
-      await (this.sqlite as any).moveDatabasesAndAddSuffix('', [dbName]);
-      logger.info(`[NativeDb] moveDatabasesAndAddSuffix done`);
-      
-      // 等待一下确保文件系统同步
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      await this.listDataDirectory();
-
-      const exists = await this.sqlite.isDatabase(dbName);
-      logger.info(`[NativeDb] isDatabase(${dbName}) result: ${exists.result}`);
-
-      if (exists.result) {
-        try {
-          await Filesystem.deleteFile({ path: fileName, directory: Directory.Data });
-          logger.info(`[NativeDb] Cleaned up temporary file ${fileName}`);
-        } catch (e) {}
-        return true;
-      } else {
-        logger.error(`[NativeDb] Database ${dbName} does not exist after move`);
-        // 尝试用带 .db 的名字再查一次
-        const existsWithExt = await this.sqlite.isDatabase(`${dbName}.db`);
-        logger.info(`[NativeDb] isDatabase(${dbName}.db) result: ${existsWithExt.result}`);
+      if (!actualSourceFile) {
+        logger.error(`[NativeDb] No source file found for ${dbName} in Directory.Data`);
         return false;
       }
+
+      // 尝试多种迁移策略
+      const moveStrategies = [
+        { name: dbName, desc: 'original name' },
+        { name: `${dbName}.db`, desc: 'name with .db' },
+        { name: actualSourceFile.replace('.db', ''), desc: 'stripped name' }
+      ];
+
+      for (const strategy of moveStrategies) {
+        logger.info(`[NativeDb] Strategy: Moving ${strategy.name} (${strategy.desc})...`);
+        try {
+          await (this.sqlite as any).moveDatabasesAndAddSuffix('', [strategy.name]);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+          const exists = await this.sqlite.isDatabase(dbName);
+          if (exists.result) {
+            logger.info(`[NativeDb] Success! Database exists as: ${dbName}`);
+            try { await Filesystem.deleteFile({ path: actualSourceFile, directory: Directory.Data }); } catch (e) {}
+            return true;
+          }
+        } catch (e: any) {
+          logger.warn(`[NativeDb] Strategy ${strategy.name} failed: ${e.message}`);
+        }
+      }
+
+      // 激进策略：手动移动到 databases 目录 (Android 专用)
+      if (Capacitor.getPlatform() === 'android') {
+        logger.info(`[NativeDb] Attempting manual move to databases folder...`);
+        try {
+          const targetPath = `../databases/${dbName}.db`;
+          await Filesystem.copy({
+            from: actualSourceFile,
+            to: targetPath,
+            directory: Directory.Data
+          });
+          logger.info(`[NativeDb] Manual copy to ${targetPath} successful`);
+          
+          const exists = await this.sqlite.isDatabase(dbName);
+          if (exists.result) {
+            logger.info(`[NativeDb] Manual move success!`);
+            return true;
+          }
+        } catch (e: any) {
+          logger.error(`[NativeDb] Manual move failed: ${e.message}`);
+        }
+      }
+
+      logger.error(`[NativeDb] All move strategies failed for ${dbName}`);
+      return false;
     } catch (e: any) {
       logger.warn('[NativeDb] moveAndLoad exception:', e);
       return false;
@@ -227,17 +262,25 @@ class NativeDatabaseService {
         await Filesystem.deleteFile({ path: filename, directory: Directory.Data });
       } catch (e) {}
 
-      const chunkSize = 1024 * 1024;
+      const chunkSize = 1024 * 1023; 
       for (let i = 0; i < data.length; i += chunkSize) {
         const chunk = data.slice(i, i + chunkSize);
         const base64Data = this.uint8ArrayToBase64(chunk);
-        await (Filesystem.writeFile as any)({
-          path: filename,
-          data: base64Data,
-          directory: Directory.Data,
-          recursive: true,
-          ...(i > 0 ? { append: true } : {})
-        });
+        
+        if (i === 0) {
+          await Filesystem.writeFile({
+            path: filename,
+            data: base64Data,
+            directory: Directory.Data,
+            recursive: true
+          });
+        } else {
+          await Filesystem.appendFile({
+            path: filename,
+            data: base64Data,
+            directory: Directory.Data
+          });
+        }
       }
 
       await this.moveAndLoad(dbName);
@@ -259,20 +302,27 @@ class NativeDatabaseService {
         await Filesystem.deleteFile({ path: filename, directory: Directory.Data });
       } catch (e) {}
 
-      const chunkSize = 1024 * 1024;
+      const chunkSize = 1024 * 1023; 
       let offset = 0;
       while (offset < file.size) {
         const chunk = file.slice(offset, offset + chunkSize);
         const buffer = await chunk.arrayBuffer();
         const base64Data = this.uint8ArrayToBase64(new Uint8Array(buffer));
         
-        await (Filesystem.writeFile as any)({
-          path: filename,
-          data: base64Data,
-          directory: Directory.Data,
-          recursive: true,
-          append: offset > 0
-        });
+        if (offset === 0) {
+          await Filesystem.writeFile({
+            path: filename,
+            data: base64Data,
+            directory: Directory.Data,
+            recursive: true
+          });
+        } else {
+          await Filesystem.appendFile({
+            path: filename,
+            data: base64Data,
+            directory: Directory.Data
+          });
+        }
 
         offset += chunk.size;
         if (onProgress) onProgress(offset / file.size);

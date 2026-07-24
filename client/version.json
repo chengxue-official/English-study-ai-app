@@ -1,6 +1,6 @@
 {
-  "version": "0.1.3",
-  "url": "https://english-exam-app-updates.pages.dev/dist-0.1.3.zip",
-  "date": "2026-07-24T10:00:00.000Z",
-  "notes": "Diagnostic logs for database migration"
+  "version": "0.1.5",
+  "url": "https://english-exam-app-updates.pages.dev/dist-0.1.5.zip",
+  "date": "2026-07-24T12:00:00.000Z",
+  "notes": "Fix large database import: binary write + manual move fallback"
 }
