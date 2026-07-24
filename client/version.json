@@ -1,6 +1,6 @@
 {
-  "version": "0.1.12",
-  "url": "https://english-exam-app-updates.pages.dev/dist-0.1.12.zip",
-  "date": "2026-07-24T19:15:00.000Z",
-  "notes": "修复 Android 端 OCR 失败问题：使用原生 CapacitorHttp 绕过 WebView 限制并增强错误日志。"
+  "version": "0.1.13",
+  "url": "https://english-exam-app-updates.pages.dev/dist-0.1.13.zip",
+  "date": "2026-07-24T19:30:00.000Z",
+  "notes": "修复 Android 端 500 错误：回归原生 Fetch 并实施请求头伪装（Origin/Referer 欺骗）。"
 }
