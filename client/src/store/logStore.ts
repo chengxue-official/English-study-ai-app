@@ -11,11 +11,24 @@ interface LogState {
   maxLogs: number
   addLog: (level: LogEntry['level'], ...args: any[]) => void
   clearLogs: () => void
+  loadLogs: () => void
 }
 
-export const useLogStore = create<LogState>((set) => ({
+const STORAGE_KEY = 'app_persistent_logs_v2'
+
+export const useLogStore = create<LogState>((set, get) => ({
   logs: [],
   maxLogs: 200,
+  loadLogs: () => {
+    const saved = localStorage.getItem(STORAGE_KEY)
+    if (saved) {
+      try {
+        set({ logs: JSON.parse(saved) })
+      } catch (e) {
+        console.error('Failed to load logs', e)
+      }
+    }
+  },
   addLog: (level, ...args) => {
     const message = args
       .map(arg => {
@@ -30,15 +43,23 @@ export const useLogStore = create<LogState>((set) => ({
       })
       .join(' ')
 
-    set((state) => ({
-      logs: [
-        { timestamp: Date.now(), level, message },
-        ...state.logs.slice(0, state.maxLogs - 1)
-      ]
-    }))
+    const newLogs = [
+      { timestamp: Date.now(), level, message },
+      ...get().logs.slice(0, get().maxLogs - 1)
+    ]
+    set({ logs: newLogs })
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(newLogs))
   },
-  clearLogs: () => set({ logs: [] })
+  clearLogs: () => {
+    set({ logs: [] })
+    localStorage.removeItem(STORAGE_KEY)
+  }
 }))
+
+// 初始化加载
+if (typeof window !== 'undefined') {
+  useLogStore.getState().loadLogs()
+}
 
 // 拦截控制台输出
 if (typeof window !== 'undefined') {

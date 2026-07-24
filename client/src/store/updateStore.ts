@@ -1,6 +1,10 @@
 import { create } from 'zustand'
 import { CapacitorUpdater } from '@capgo/capacitor-updater'
 import { Capacitor } from '@capacitor/core'
+import { logger } from '../services/logger'
+
+// 声明全局变量
+declare const __APP_VERSION__: string;
 
 interface VersionInfo {
   version: string
@@ -22,11 +26,10 @@ interface UpdateState {
   applyUpdate: () => Promise<void>
 }
 
-// 当前版本号，应与 package.json 保持一致
-const CURRENT_VERSION = '0.1.1'
+// 当前版本号，从 Vite define 中获取
+const CURRENT_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.1.1'
 
 // 远程更新服务器的基础地址
-// Cloudflare Pages 格式: 'https://<project-name>.pages.dev'
 const REMOTE_UPDATE_BASE_URL = 'https://english-exam-app-updates.pages.dev' 
 
 export const useUpdateStore = create<UpdateState>((set, get) => ({
@@ -39,23 +42,21 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   downloadProgress: 0,
 
   checkUpdate: async () => {
-    console.log('[UpdateStore] Starting checkUpdate...')
+    logger.info('[UpdateStore] Starting checkUpdate...');
     set({ isChecking: true, updateError: null })
     try {
-      // 在 Capacitor 环境下，必须使用绝对路径请求远程服务器
       const updateUrl = `${REMOTE_UPDATE_BASE_URL}/version.json?t=${Date.now()}`
-      console.log('[UpdateStore] Fetching version from:', updateUrl)
+      logger.info('[UpdateStore] Fetching version from:', updateUrl)
       const response = await fetch(updateUrl)
       if (!response.ok) {
-        console.error('[UpdateStore] Fetch failed with status:', response.status)
         throw new Error(`无法获取版本信息 (${response.status})`)
       }
       
       const latest: VersionInfo = await response.json()
-      console.log('[UpdateStore] Latest version info:', latest)
+      logger.info('[UpdateStore] Latest version info:', latest)
       
       const hasUpdate = compareVersions(CURRENT_VERSION, latest.version) < 0
-      console.log(`[UpdateStore] Comparison: current=${CURRENT_VERSION}, latest=${latest.version}, hasUpdate=${hasUpdate}`)
+      logger.info(`[UpdateStore] Comparison: current=${CURRENT_VERSION}, latest=${latest.version}, hasUpdate=${hasUpdate}`)
       
       set({
         latestVersion: latest,
@@ -63,7 +64,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
         isChecking: false
       })
     } catch (err: any) {
-      console.error('[UpdateStore] checkUpdate error:', err)
+      logger.error('[UpdateStore] checkUpdate error:', err)
       set({
         isChecking: false,
         updateError: err.message || '检查更新失败'
@@ -74,7 +75,6 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   applyUpdate: async () => {
     const { latestVersion } = get()
     if (!latestVersion?.url) {
-      // 如果没有 URL，可能是 Web 环境下的简单刷新
       if (!Capacitor.isNativePlatform()) {
         window.location.reload()
       }
@@ -83,32 +83,34 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
 
     if (Capacitor.isNativePlatform()) {
       try {
+        logger.info('[UpdateStore] Applying update for version:', latestVersion.version);
         set({ isDownloading: true, downloadProgress: 0, updateError: null })
         
-        // 监听下载进度
         const listener = await CapacitorUpdater.addListener('download', (info: any) => {
           set({ downloadProgress: Math.round(info.percent) })
         })
 
-        // 下载更新包
+        logger.info('[UpdateStore] Downloading update from:', latestVersion.url);
         const version = await CapacitorUpdater.download({
           url: latestVersion.url,
           version: latestVersion.version,
         })
 
-        // 移除监听器
         listener.remove()
+        logger.info('[UpdateStore] Download complete, version id:', version.id);
 
         // 应用更新并重启 WebView
+        logger.info('[UpdateStore] Calling CapacitorUpdater.set...');
         await CapacitorUpdater.set({ id: version.id })
+        logger.info('[UpdateStore] CapacitorUpdater.set finished, app should reload now');
       } catch (err: any) {
+        logger.error('[UpdateStore] applyUpdate error:', err);
         set({ 
           isDownloading: false, 
           updateError: err.message || '下载更新失败' 
         })
       }
     } else {
-      // Web 环境下直接打开链接
       window.open(latestVersion.url, '_blank')
     }
   }

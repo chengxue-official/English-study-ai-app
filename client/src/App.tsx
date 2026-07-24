@@ -33,6 +33,13 @@ function App() {
       SplashScreen.hide()
       // 通知 Updater 应用已准备好，防止回滚
       CapacitorUpdater.notifyAppReady()
+      
+      // 记录启动信息
+      const version = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'unknown'
+      console.info(`[App] App started. Platform: ${Capacitor.getPlatform()}, Version: ${version}`)
+    } else {
+      const version = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'web-dev'
+      console.info(`[App] App started on Web. Version: ${version}`)
     }
   }, [loadFromStorage])
 

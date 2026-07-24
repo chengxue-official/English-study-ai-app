@@ -1,6 +1,7 @@
 import { Capacitor } from '@capacitor/core';
 import { SQLiteConnection, SQLiteDBConnection, CapacitorSQLite } from '@capacitor-community/sqlite';
 import { Filesystem, Directory } from '@capacitor/filesystem';
+import { logger } from './logger';
 
 class NativeDatabaseService {
   private sqlite: SQLiteConnection | null = null;
@@ -11,7 +12,7 @@ class NativeDatabaseService {
   constructor() {
     if (this.isNative) {
       this.sqlite = new SQLiteConnection(CapacitorSQLite);
-      console.log('[NativeDb] SQLite Connection initialized');
+      logger.info('[NativeDb] SQLite Connection initialized');
     }
   }
 
@@ -19,13 +20,13 @@ class NativeDatabaseService {
     if (!this.isNative || !this.sqlite) return;
 
     try {
-      console.log('[NativeDb] Initializing native database...');
+      logger.info('[NativeDb] Initializing native database...');
       
       // 检查连接一致性
       try {
         await this.sqlite.checkConnectionsConsistency();
       } catch (e) {
-        console.warn('[NativeDb] checkConnectionsConsistency failed:', e);
+        logger.warn('[NativeDb] checkConnectionsConsistency failed:', e);
       }
 
       this.cacheDb = await this.sqlite.createConnection('cache', false, 'no-encryption', 1, false);
@@ -33,7 +34,7 @@ class NativeDatabaseService {
       await this.initCacheTables();
       await this.tryLoadDict();
     } catch (err) {
-      console.error('[NativeDb] Init failed:', err);
+      logger.error('[NativeDb] Init failed:', err);
       throw err;
     }
   }
@@ -86,14 +87,13 @@ class NativeDatabaseService {
     const maxRetries = 3;
     for (let retry = 0; retry < maxRetries; retry++) {
       try {
-        console.log(`[NativeDb] Checking for database "stardict" (attempt ${retry + 1})...`);
+        logger.info(`[NativeDb] Checking for database "stardict" (attempt ${retry + 1})...`);
         
-        // 尝试多种可能的名称
         const names = ['stardict', 'stardictSQLite', 'stardict.db', 'stardict.dbSQLite'];
         for (const name of names) {
           const exists = await this.sqlite.isDatabase(name);
           if (exists.result) {
-            console.log(`[NativeDb] Found database with name: ${name}`);
+            logger.info(`[NativeDb] Found database with name: ${name}`);
             if (this.dictDb) {
               try {
                 await this.sqlite.closeConnection(name, false);
@@ -102,92 +102,83 @@ class NativeDatabaseService {
             this.dictDb = await this.sqlite.createConnection(name, false, 'no-encryption', 1, false);
             try {
               await this.dictDb.open();
-              console.log(`[NativeDb] Dict loaded successfully using name: ${name}`);
+              logger.info(`[NativeDb] Dict loaded successfully using name: ${name}`);
               return true;
             } catch (openErr: any) {
-              console.error(`[NativeDb] Failed to open dict database (${name}):`, openErr);
+              logger.error(`[NativeDb] Failed to open dict database (${name}):`, openErr);
             }
           }
         }
         
         if (retry < maxRetries - 1) {
-          console.log('[NativeDb] Database not found yet, waiting 500ms before retry...');
           await new Promise(resolve => setTimeout(resolve, 500));
         }
       } catch (err) {
-        console.warn(`[NativeDb] Attempt ${retry + 1} failed:`, err);
+        logger.warn(`[NativeDb] Attempt ${retry + 1} failed:`, err);
       }
     }
-
-    // 如果找不到，检查 files/ 目录下是否有 stardict.db，如果有则尝试迁移
-    try {
-      const stat = await Filesystem.stat({ path: 'stardict.db', directory: Directory.Data });
-      if (stat) {
-        console.log(`[NativeDb] Found stardict.db in files/ (size: ${stat.size}), but not in databases/.`);
-      }
-    } catch (e) {}
-
-    // 列出所有数据库以供调试
-    const dbList = await this.sqlite.getDatabaseList();
-    console.log('[NativeDb] Current database list from plugin:', JSON.stringify(dbList.values));
-    
     return false;
+  }
+
+  private async listDataDirectory() {
+    try {
+      const result = await Filesystem.readdir({
+        path: '',
+        directory: Directory.Data
+      });
+      logger.info(`[NativeDb] Files in Directory.Data: ${result.files.map(f => f.name).join(', ')}`);
+    } catch (e: any) {
+      logger.error(`[NativeDb] Failed to list Directory.Data: ${e.message}`);
+    }
   }
 
   public async moveAndLoad(dbName: string): Promise<boolean> {
     if (!this.isNative || !this.sqlite) return false;
     
     try {
-      console.log(`[NativeDb] Moving ${dbName} from files/ to databases/...`);
+      await this.listDataDirectory();
       
-      // 迁移前验证文件是否存在
+      const fileName = `${dbName}.db`;
       try {
-        const stat = await Filesystem.stat({ path: `${dbName}.db`, directory: Directory.Data });
-        console.log(`[NativeDb] Pre-migration check: ${dbName}.db exists, size: ${stat.size}`);
+        const stat = await Filesystem.stat({
+          path: fileName,
+          directory: Directory.Data
+        });
+        logger.info(`[NativeDb] Source file ${fileName} size: ${stat.size}`);
       } catch (e) {
-        console.error(`[NativeDb] Pre-migration check failed: ${dbName}.db not found in files/`);
-        return false;
+        logger.warn(`[NativeDb] Source file ${fileName} not found before move`);
       }
 
-      // 迁移前强制同步一次
-      try {
-        await this.sqlite.checkConnectionsConsistency();
-      } catch (e) {}
-
-      // 插件要求提供文件夹路径（相对于 files/）和数据库列表
-      await (this.sqlite as any).moveDatabasesAndAddSuffix('', [dbName]);
-      console.log('[NativeDb] moveDatabasesAndAddSuffix call finished, waiting 500ms for OS to sync...');
-      await new Promise(resolve => setTimeout(resolve, 500));
+      logger.info(`[NativeDb] Moving ${dbName} from files/ to databases/...`);
       
-      // 验证迁移结果
-      const names = [dbName, `${dbName}SQLite`, `${dbName}.db`, `${dbName}.dbSQLite`].filter(Boolean);
-      let found = false;
-      for (const name of names) {
-        const exists = await this.sqlite.isDatabase(name);
-        if (exists.result) {
-          console.log(`[NativeDb] Migration verified! Database exists as: ${name}`);
-          found = true;
-          break;
-        }
-      }
+      // moveDatabasesAndAddSuffix 会将文件从 Directory.Data 移动到插件私有目录
+      // 并且会自动添加 .db 后缀（如果原本没有）
+      await (this.sqlite as any).moveDatabasesAndAddSuffix('', [dbName]);
+      logger.info(`[NativeDb] moveDatabasesAndAddSuffix done`);
+      
+      // 等待一下确保文件系统同步
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      await this.listDataDirectory();
 
-      if (found) {
-        // 只有确认迁移成功（插件能看到）后，才删除原文件
+      const exists = await this.sqlite.isDatabase(dbName);
+      logger.info(`[NativeDb] isDatabase(${dbName}) result: ${exists.result}`);
+
+      if (exists.result) {
         try {
-          await Filesystem.deleteFile({ path: `${dbName}.db`, directory: Directory.Data });
-          console.log(`[NativeDb] Cleaned up temporary file: ${dbName}.db`);
-        } catch (e) {
-          console.warn('[NativeDb] Failed to delete temp file, but migration succeeded:', e);
-        }
+          await Filesystem.deleteFile({ path: fileName, directory: Directory.Data });
+          logger.info(`[NativeDb] Cleaned up temporary file ${fileName}`);
+        } catch (e) {}
         return true;
       } else {
-        console.error('[NativeDb] moveDatabasesAndAddSuffix returned but plugin still cannot see the database.');
-        const dbList = await this.sqlite.getDatabaseList();
-        console.log('[NativeDb] Database list after failed migration:', JSON.stringify(dbList.values));
+        logger.error(`[NativeDb] Database ${dbName} does not exist after move`);
+        // 尝试用带 .db 的名字再查一次
+        const existsWithExt = await this.sqlite.isDatabase(`${dbName}.db`);
+        logger.info(`[NativeDb] isDatabase(${dbName}.db) result: ${existsWithExt.result}`);
         return false;
       }
-    } catch (e) {
-      console.warn('[NativeDb] moveAndLoad exception:', e);
+    } catch (e: any) {
+      logger.warn('[NativeDb] moveAndLoad exception:', e);
       return false;
     }
   }
@@ -229,16 +220,14 @@ class NativeDatabaseService {
     if (!this.isNative || !this.sqlite) return;
 
     try {
-      console.log(`[NativeDb] Importing ${dbName}, size: ${data.length} bytes`);
-      
+      logger.info(`[NativeDb] Importing ${dbName}, size: ${data.length} bytes`);
       const filename = `${dbName}.db`;
       
-      // 尝试删除旧文件
       try {
         await Filesystem.deleteFile({ path: filename, directory: Directory.Data });
       } catch (e) {}
 
-      const chunkSize = 1024 * 1024; // 1MB chunks
+      const chunkSize = 1024 * 1024;
       for (let i = 0; i < data.length; i += chunkSize) {
         const chunk = data.slice(i, i + chunkSize);
         const base64Data = this.uint8ArrayToBase64(chunk);
@@ -249,40 +238,28 @@ class NativeDatabaseService {
           recursive: true,
           ...(i > 0 ? { append: true } : {})
         });
-        if (i % (10 * chunkSize) === 0) {
-          console.log(`[NativeDb] Import progress: ${((i / data.length) * 100).toFixed(1)}%`);
-        }
       }
 
-      // 移动并加载
       await this.moveAndLoad(dbName);
-
-      const loaded = await this.tryLoadDict();
-      if (!loaded) {
-        throw new Error('Database file written but could not be loaded by SQLite plugin');
-      }
+      await this.tryLoadDict();
     } catch (err) {
-      console.error('[NativeDb] Import failed:', err);
+      logger.error('[NativeDb] Import failed:', err);
       throw err;
     }
   }
 
-  /**
-   * 内存安全地从 Blob/File 导入数据库
-   */
   public async importDatabaseFromBlob(dbName: string, file: Blob, onProgress?: (prog: number) => void): Promise<void> {
     if (!this.isNative || !this.sqlite) return;
 
     try {
-      console.log(`[NativeDb] Importing ${dbName} from Blob, size: ${file.size} bytes`);
+      logger.info(`[NativeDb] Importing ${dbName} from Blob, size: ${file.size} bytes`);
       const filename = `${dbName}.db`;
       
-      // 尝试删除旧文件
       try {
         await Filesystem.deleteFile({ path: filename, directory: Directory.Data });
       } catch (e) {}
 
-      const chunkSize = 1024 * 1024; // 1MB chunks
+      const chunkSize = 1024 * 1024;
       let offset = 0;
       while (offset < file.size) {
         const chunk = file.slice(offset, offset + chunkSize);
@@ -298,23 +275,14 @@ class NativeDatabaseService {
         });
 
         offset += chunk.size;
-        if (onProgress) {
-          onProgress(offset / file.size);
-        }
-        if (Math.floor((offset - chunk.size) / (10 * chunkSize)) !== Math.floor(offset / (10 * chunkSize))) {
-          console.log(`[NativeDb] Blob Import progress: ${((offset / file.size) * 100).toFixed(1)}%`);
-        }
+        if (onProgress) onProgress(offset / file.size);
       }
 
-      // 移动并加载
+      logger.info(`[NativeDb] File ${dbName}.db written successfully, size: ${offset} bytes`);
       await this.moveAndLoad(dbName);
-
-      const loaded = await this.tryLoadDict();
-      if (!loaded) {
-        throw new Error('Database file written but could not be loaded by SQLite plugin');
-      }
+      await this.tryLoadDict();
     } catch (err) {
-      console.error('[NativeDb] Blob Import failed:', err);
+      logger.error('[NativeDb] Blob Import failed:', err);
       throw err;
     }
   }
@@ -329,13 +297,12 @@ class NativeDatabaseService {
       const pageCount = pageCountRes.values?.[0]?.page_count || 0;
       return pageSize * pageCount;
     } catch (e) {
-      console.warn(`[NativeDb] Failed to get ${dbType} size:`, e);
+      logger.warn(`[NativeDb] Failed to get ${dbType} size:`, e);
       return 0;
     }
   }
 
   private uint8ArrayToBase64(arr: Uint8Array): string {
-    // 使用更高效的分块转换方法，避免大数组导致的栈溢出或性能问题
     let binary = '';
     const len = arr.byteLength;
     const chunk = 8192;
