@@ -335,28 +335,28 @@ export default function DictionaryManager({ onComplete, forceShow, onClose }: Di
             </button>
 
             <button
-              onClick={() => startDownload('full')}
+              onClick={() => window.open('https://pan.quark.cn/s/39a5da2f8977', '_blank')}
               className={`w-full p-4 border rounded-2xl text-left transition-all group ${installedType === 'full' ? 'bg-purple-100 border-purple-300' : 'bg-purple-50 hover:bg-purple-100 border-purple-100'}`}
             >
               <div className="flex justify-between items-center mb-1">
                 <h3 className="font-bold text-purple-900">
-                  {installedType === 'full' ? '重新下载' : '下载'} Ultimate 版
+                  {installedType === 'full' ? '重新获取' : '获取'} Ultimate 版 (夸克网盘)
                   {installedType === 'full' && <span className="ml-2 text-[10px] text-purple-600 font-normal">(已安装)</span>}
                 </h3>
                 <span className="text-[10px] px-2 py-0.5 bg-purple-600 text-white rounded-full">616MB</span>
               </div>
-              <p className="text-xs text-purple-700/70">包含 432万 词条，涵盖所有生僻词。建议在 Wi-Fi 环境下下载。</p>
+              <p className="text-xs text-purple-700/70">包含 432万 词条，涵盖所有生僻词。由于文件较大，请通过网盘下载后手动导入。</p>
             </button>
 
             <div className="grid grid-cols-2 gap-3">
               <button
-                onClick={() => window.open('https://github.com/skywind3000/ECDICT-ultimate/releases', '_blank')}
+                onClick={() => window.open('https://pan.quark.cn/s/39a5da2f8977', '_blank')}
                 className="p-3 bg-indigo-50 hover:bg-indigo-100 border border-indigo-100 rounded-2xl text-left transition-all group"
               >
                 <div className="flex justify-between items-center mb-1">
-                  <h3 className="text-xs font-bold text-indigo-900">Ultimate (GitHub)</h3>
+                  <h3 className="text-xs font-bold text-indigo-900">Ultimate (夸克网盘)</h3>
                 </div>
-                <p className="text-[10px] text-indigo-700/70 leading-tight">从 GitHub 获取最新 Ultimate 版资源。</p>
+                <p className="text-[10px] text-indigo-700/70 leading-tight">从夸克网盘获取 Ultimate 版资源 (提取码见网盘)。</p>
               </button>
 
               <label className="p-3 bg-emerald-50 hover:bg-emerald-100 border border-emerald-100 rounded-2xl text-left transition-all cursor-pointer group">

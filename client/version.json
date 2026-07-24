@@ -1,6 +1,6 @@
 {
-  "version": "0.1.5",
-  "url": "https://english-exam-app-updates.pages.dev/dist-0.1.5.zip",
-  "date": "2026-07-24T12:00:00.000Z",
-  "notes": "Fix large database import: binary write + manual move fallback"
+  "version": "0.1.6",
+  "url": "https://english-exam-app-updates.pages.dev/dist-0.1.6.zip",
+  "date": "2026-07-24T14:00:00.000Z",
+  "notes": "修复移动端 OCR 识别失效问题；更新 Ultimate 版词典下载链接为夸克网盘。"
 }

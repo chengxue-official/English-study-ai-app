@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react'
 import { useArticleStore } from '../store/articleStore'
+import { OcrService } from '../services/ocr'
 
 export default function ArticleInput() {
   const [text, setText] = useState('')
@@ -41,21 +42,8 @@ export default function ArticleInput() {
 
     setIsUploading(true)
     try {
-      const formData = new FormData()
-      formData.append('file', file)
-
-      const response = await fetch('http://localhost:3001/api/ocr', {
-        method: 'POST',
-        body: formData,
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || '识别失败')
-      }
-
-      const data = await response.json()
-      setText(prev => prev ? prev + '\n\n' + data.text : data.text)
+      const recognizedText = await OcrService.recognize(file)
+      setText(prev => prev ? prev + '\n\n' + recognizedText : recognizedText)
     } catch (err) {
       alert(err instanceof Error ? err.message : '图片识别失败')
     } finally {
