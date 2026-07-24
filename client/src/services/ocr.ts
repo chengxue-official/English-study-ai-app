@@ -1,6 +1,10 @@
+import { Capacitor } from '@capacitor/core';
 
 export class OcrService {
-  private static JOB_URL = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs";
+  private static JOB_URL_BASE = Capacitor.getPlatform() === 'web' 
+    ? "/ocr-api/api/v2/ocr/jobs" 
+    : "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs";
+  
   private static TOKEN = "9658a109a67edf61a60b83b282de50e44bbd05ba";
   private static MODEL = "PaddleOCR-VL-1.6";
 
@@ -8,8 +12,10 @@ export class OcrService {
    * 识别图片中的文字
    */
   public static async recognize(file: File | Blob): Promise<string> {
+    const JOB_URL = this.JOB_URL_BASE;
     try {
-      console.log(`[OcrService] 提交任务: ${file instanceof File ? file.name : 'blob'}`);
+      console.log(`[OcrService] 平台: ${Capacitor.getPlatform()}, 提交任务: ${file instanceof File ? file.name : 'blob'}`);
+      console.log(`[OcrService] 正在发送请求到: ${JOB_URL}`);
       
       const formData = new FormData();
       formData.append('model', this.MODEL);
@@ -25,7 +31,7 @@ export class OcrService {
       };
 
       // 提交任务
-      const jobResponse = await fetch(this.JOB_URL, {
+      const jobResponse = await fetch(JOB_URL, {
         method: 'POST',
         headers,
         body: formData
@@ -33,6 +39,7 @@ export class OcrService {
 
       if (!jobResponse.ok) {
         const text = await jobResponse.text();
+        console.error(`[OcrService] 提交任务失败, status: ${jobResponse.status}, response: ${text}`);
         throw new Error(`提交任务失败: ${text}`);
       }
 
@@ -46,7 +53,7 @@ export class OcrService {
       const maxAttempts = 20; // 最多等待 60 秒 (20 * 3s)
 
       while (attempts < maxAttempts) {
-        const statusResponse = await fetch(`${this.JOB_URL}/${jobId}`, { headers });
+        const statusResponse = await fetch(`${JOB_URL}/${jobId}`, { headers });
         if (!statusResponse.ok) throw new Error('查询状态失败');
         
         const statusData = await statusResponse.json();
@@ -69,7 +76,12 @@ export class OcrService {
       }
 
       // 获取结果
-      const jsonlResponse = await fetch(jsonlUrl);
+      let finalJsonlUrl = jsonlUrl;
+      if (Capacitor.getPlatform() === 'web' && finalJsonlUrl.startsWith('https://paddleocr.aistudio-app.com')) {
+        finalJsonlUrl = finalJsonlUrl.replace('https://paddleocr.aistudio-app.com', '/ocr-api');
+      }
+      
+      const jsonlResponse = await fetch(finalJsonlUrl);
       if (!jsonlResponse.ok) throw new Error('获取结果失败');
       
       const jsonlText = await jsonlResponse.text();

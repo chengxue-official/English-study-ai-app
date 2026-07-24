@@ -6,7 +6,10 @@ const config: CapacitorConfig = {
   webDir: 'dist',
   plugins: {
     CapacitorUpdater: {
-      autoUpdate: false, // 我们选择手动控制更新时机，配合 UI 提示
+      autoUpdate: false,
+    },
+    CapacitorHttp: {
+      enabled: true,
     }
   }
 };
