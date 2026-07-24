@@ -27,14 +27,18 @@ export class OcrService {
 
       console.log(`[OcrService] 正在提交任务到: ${submitUrl}`);
       
+      const headers = { "Authorization": `Bearer ${this.TOKEN}` };
+      console.log(`[OcrService] 请求头:`, JSON.stringify(headers));
+
       const response = await fetch(submitUrl, {
         method: 'POST',
-        headers: { "Authorization": `bearer ${this.TOKEN}` },
+        headers: headers,
         body: formData
       });
 
       if (!response.ok) {
         const errorText = await response.text();
+        console.error(`[OcrService] 提交失败详情: 状态码=${response.status}, 响应体=${errorText}`);
         throw new Error(`提交失败: ${response.status} ${errorText}`);
       }
       
@@ -52,10 +56,13 @@ export class OcrService {
         const statusUrl = isWeb ? `/ocr-api/api/v2/ocr/jobs/${jobId}` : `${this.JOB_URL}/${jobId}`;
         
         const statusResponse = await fetch(statusUrl, {
-          headers: { "Authorization": `bearer ${this.TOKEN}` }
+          headers: { "Authorization": `Bearer ${this.TOKEN}` }
         });
 
-        if (statusResponse.ok) {
+        if (!statusResponse.ok) {
+          const errorText = await statusResponse.text();
+          console.error(`[OcrService] 轮询请求失败: 状态码=${statusResponse.status}, 响应体=${errorText}`);
+        } else {
           const statusData = await statusResponse.json();
           const state = statusData.data.state;
           console.log(`[OcrService] 轮询状态 (${attempts}): ${state}`);
@@ -66,8 +73,6 @@ export class OcrService {
           } else if (state === 'failed') {
             throw new Error(`任务失败: ${statusData.data.errorMsg}`);
           }
-        } else {
-          console.warn(`[OcrService] 轮询请求失败: ${statusResponse.status}`);
         }
 
         await new Promise(resolve => setTimeout(resolve, 5000));
@@ -78,8 +83,17 @@ export class OcrService {
       // 3. 获取结果
       console.log(`[OcrService] 正在获取结果: ${jsonlUrl}`);
       
-      // Web 端尝试通过代理
-      const finalResultUrl = isWeb ? jsonlUrl.replace(/https:\/\/.*\.aistudio-app\.com/, "/ocr-api") : jsonlUrl;
+      // Web 端尝试通过代理解决 CORS
+      let finalResultUrl = jsonlUrl;
+      if (isWeb) {
+        if (jsonlUrl.includes('aistudio-app.com')) {
+          finalResultUrl = jsonlUrl.replace(/https:\/\/.*\.aistudio-app\.com/, "/ocr-api");
+        } else if (jsonlUrl.includes('bcebos.com')) {
+          finalResultUrl = jsonlUrl.replace(/https:\/\/.*\.bcebos\.com/, "/ocr-storage");
+        }
+        console.log(`[OcrService] Web 代理转换: ${jsonlUrl} -> ${finalResultUrl}`);
+      }
+      
       const resultResponse = await fetch(finalResultUrl);
       
       if (!resultResponse.ok) {
