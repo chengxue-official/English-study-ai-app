@@ -1,4 +1,3 @@
-import { Capacitor } from '@capacitor/core';
 
 export class OcrService {
   private static JOB_URL = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs";
