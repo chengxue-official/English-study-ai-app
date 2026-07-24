@@ -89,7 +89,13 @@ class NativeDatabaseService {
       try {
         logger.info(`[NativeDb] Checking for database "stardict" (attempt ${retry + 1})...`);
         
-        const names = ['stardict', 'stardictSQLite', 'stardict.db', 'stardict.dbSQLite'];
+        const names = [
+          'stardict', 
+          'stardictSQLite', 
+          'stardict.db', 
+          'stardict.dbSQLite',
+          'stardictSQLite.db'
+        ];
         for (const name of names) {
           const exists = await this.sqlite.isDatabase(name);
           if (exists.result) {
@@ -182,31 +188,60 @@ class NativeDatabaseService {
             logger.info(`[NativeDb] Success! Database exists as: ${dbName}`);
             try { await Filesystem.deleteFile({ path: actualSourceFile, directory: Directory.Data }); } catch (e) {}
             return true;
+          } else {
+            logger.warn(`[NativeDb] moveDatabasesAndAddSuffix finished but isDatabase(${dbName}) is false`);
           }
         } catch (e: any) {
-          logger.warn(`[NativeDb] Strategy ${strategy.name} failed: ${e.message}`);
+          logger.warn(`[NativeDb] Strategy ${strategy.name} failed: ${e.message || e}`);
         }
       }
 
       // 激进策略：手动移动到 databases 目录 (Android 专用)
       if (Capacitor.getPlatform() === 'android') {
         logger.info(`[NativeDb] Attempting manual move to databases folder...`);
-        try {
-          const targetPath = `../databases/${dbName}.db`;
-          await Filesystem.copy({
-            from: actualSourceFile,
-            to: targetPath,
-            directory: Directory.Data
-          });
-          logger.info(`[NativeDb] Manual copy to ${targetPath} successful`);
-          
-          const exists = await this.sqlite.isDatabase(dbName);
-          if (exists.result) {
-            logger.info(`[NativeDb] Manual move success!`);
-            return true;
+        const targetNames = [`${dbName}SQLite.db`, `${dbName}.db` ];
+        
+        for (const targetName of targetNames) {
+          try {
+            const targetPath = `../databases/${targetName}`;
+            logger.info(`[NativeDb] Manual copy to ${targetPath}...`);
+            await Filesystem.copy({
+              from: actualSourceFile,
+              to: targetPath,
+              directory: Directory.Data
+            });
+            
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // 验证文件是否存在
+            try {
+              const stat = await Filesystem.stat({
+                path: targetPath,
+                directory: Directory.Data
+              });
+              logger.info(`[NativeDb] Manual copy verified: ${targetPath}, size: ${stat.size}`);
+            } catch (statErr) {
+              logger.warn(`[NativeDb] Manual copy verification failed for ${targetPath}`);
+            }
+
+            const exists = await this.sqlite.isDatabase(dbName);
+            if (exists.result) {
+              logger.info(`[NativeDb] Manual move success with target ${targetName}!`);
+              try { await Filesystem.deleteFile({ path: actualSourceFile, directory: Directory.Data }); } catch (e) {}
+              return true;
+            } else {
+              // 尝试直接用 targetName (去掉 .db) 检查
+              const checkName = targetName.replace('.db', '');
+              const exists2 = await this.sqlite.isDatabase(checkName);
+              if (exists2.result) {
+                logger.info(`[NativeDb] Manual move success with checkName ${checkName}!`);
+                try { await Filesystem.deleteFile({ path: actualSourceFile, directory: Directory.Data }); } catch (e) {}
+                return true;
+              }
+            }
+          } catch (e: any) {
+            logger.error(`[NativeDb] Manual move to ${targetName} failed: ${e.message}`);
           }
-        } catch (e: any) {
-          logger.error(`[NativeDb] Manual move failed: ${e.message}`);
         }
       }
 
